@@ -1,0 +1,5 @@
+venv
+.coverage
+htmlcov
+integrationtest/data
+__pycache__
