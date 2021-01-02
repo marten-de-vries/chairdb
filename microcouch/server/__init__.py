@@ -52,7 +52,6 @@ def all_dbs(request):
     return JSONResp(list(request.app.state.dbs.keys()))
 
 
-
 class DBLoaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         try:

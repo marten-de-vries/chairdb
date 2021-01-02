@@ -195,6 +195,7 @@ class RevisionTree(typing.NamedTuple):
             if isinstance(node, Node):
                 # contrary to a Leaf, a Node should have children.
                 assert node.children
+
                 def by_rev(node):
                     return self._get_first_leaf_rev(rev_num, node)
                 sort_result = sorted(node.children, key=by_rev)

@@ -2,9 +2,11 @@ import sortedcontainers
 
 import asyncio
 import typing
+import uuid
 
 from .revtree import Leaf, RevisionTree
-from .utils import rev as _rev, parse_rev as _parse_rev
+from .utils import rev as _rev, parse_rev as _parse_rev, Change
+from .errors import NotFound
 
 
 class DocumentInfo(typing.NamedTuple):
@@ -14,39 +16,16 @@ class DocumentInfo(typing.NamedTuple):
     last_update_seq: int
 
 
-class Change(typing.NamedTuple):
-    id: str
-    seq: int
-    deleted: bool
-    leaf_revs: list
-
-
-class InMemoryDatabase:
-    """Offers both a synchronous and asynchronous interface. Considering the
-    (memory) backend, the asynchronous interface is there only for compatibilty
-    with other implementations that require it.
-
-    """
-    def __init__(self):
+class SyncInMemoryDatabase:
+    def __init__(self, id=None):
+        self.id_sync = (id or uuid.uuid4().hex) + 'memory'
         self.update_seq_sync = 0
-        # id (without _local) -> document (dict; without _id & _rev)
-        self.local = sortedcontainers.SortedDict()
+        # id -> document (dict)
+        self._local = sortedcontainers.SortedDict()
         # id -> DocumentInfo
         self._byid = sortedcontainers.SortedDict()
         # seq -> id (str)
         self._byseq = sortedcontainers.SortedDict()
-
-    @property
-    def update_seq(self):
-        # hackity hack
-        f = asyncio.get_event_loop().create_future()
-        f.set_result(self.update_seq_sync)
-        return f
-
-    async def changes(self):
-        # boring conversion code
-        for change in self.changes_sync():
-            yield change
 
     def changes_sync(self):
         # if we ever support style='main_only' then storing winner metadata in
@@ -62,10 +41,6 @@ class InMemoryDatabase:
         for rev_num, _, leaf in doc_info.rev_tree.leafs():
             yield _rev(rev_num, leaf)
 
-    async def revs_diff(self, remote):
-        async for id, revs in remote:
-            yield self.revs_diff_sync(id, revs)
-
     def revs_diff_sync(self, id, revs):
         try:
             doc_info = self._byid[id]
@@ -75,14 +50,19 @@ class InMemoryDatabase:
             missing = set(revs) - set(doc_info.rev_tree.all_revs())
         return id, {'missing': missing}
 
-    async def write(self, docs):
-        async for doc in docs:
-            try:
-                self.write_sync(doc)
-            except (KeyError, AssertionError) as error:
-                yield error
-
     def write_sync(self, doc):
+        if doc['_id'].startswith('_local/'):
+            self._write_local(doc)
+        else:
+            self._write_normal(doc)
+
+    def _write_local(self, doc):
+        if doc.get('_deleted'):
+            del self._local[doc['_id']]
+        else:
+            self._local[doc['_id']] = doc
+
+    def _write_normal(self, doc):
         id = doc.pop('_id')
         revs, doc = self._prepare_doc(doc)
         rev_tree = self._update_rev_tree(id, revs, doc)
@@ -115,12 +95,20 @@ class InMemoryDatabase:
         rev_tree.validate()  # TODO: remove?
         return rev_tree
 
-    async def read(self, requested, include_path=False):
-        async for id, revs in requested:
-            for doc in self.read_sync(id, revs):
-                yield doc
-
     def read_sync(self, id, revs, include_path=False):
+        try:
+            if id.startswith('_local/'):
+                yield self._read_local(id, revs)
+            else:
+                yield from self._read_normal(id, revs, include_path)
+        except KeyError as e:
+            raise NotFound(id) from e
+
+    def _read_local(self, id, revs):
+        assert revs == 'winner'
+        return {**self._local[id], '_rev': '0-1'}
+
+    def _read_normal(self, id, revs, include_path):
         winning_rev_num, winning_leaf, rev_tree, _ = self._byid[id]
         if include_path and revs == 'winner':
             # we need the path in the tree, so search in full
@@ -148,3 +136,47 @@ class InMemoryDatabase:
             ids = [leaf.rev_hash] + [rev_hash for _, rev_hash in path]
             doc['_revisions'] = {'start': rev_num, 'ids': ids}
         return doc
+
+
+class InMemoryDatabase(SyncInMemoryDatabase):
+    """Offers both a synchronous and asynchronous interface. Considering the
+    (memory) backend, the asynchronous interface is there only for compatibilty
+    with other implementations that require it.
+
+    """
+    @property
+    def id(self):
+        return self._as_future_result(self.id_sync)
+
+    def _as_future_result(self, value):
+        future = asyncio.get_event_loop().create_future()
+        future.set_result(value)
+        return future
+
+    @property
+    def update_seq(self):
+        return self._as_future_result(self.update_seq_sync)
+
+    async def changes(self):
+        # boring conversion code
+        for change in self.changes_sync():
+            yield change
+
+    async def revs_diff(self, remote):
+        async for id, revs in remote:
+            yield self.revs_diff_sync(id, revs)
+
+    async def write(self, docs):
+        async for doc in docs:
+            try:
+                self.write_sync(doc)
+            except (AssertionError, KeyError) as exc:
+                yield exc
+
+    async def read(self, requested, include_path=False):
+        async for id, revs in requested:
+            try:
+                for doc in self.read_sync(id, revs):
+                    yield doc
+            except NotFound as exc:
+                yield exc

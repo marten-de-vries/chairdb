@@ -1,39 +1,46 @@
 import pytest
 
 from microcouch import HTTPDatabase
+from microcouch.utils import async_iter
 
 @pytest.mark.asyncio
 async def test_remote():
     url = 'http://localhost:5984/test'
-    async with HTTPDatabase(url, auth=('marten', 'test')) as db:
-        print(await db.create())
-        print(await db.update_seq)
-        async for change in db.revs_diff({'unexisting': ['1-x', '2-y']}):
-            print(change)
-        # query some unexisting rev
-        docs = [
-            {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {
-                'start': 1,
-                'ids': ['x'],
-            }},
-            {'_id': 'mytest', '_rev': '2-y', '_deleted': True, '_revisions': {
-                'start': 2,
-                'ids': ['y', 'x']
-            }}
-        ]
-        async for result in db.write(docs):
-            # empty for couchdb, which only sends back errors, not successes
-            print(result)
-        req = [
-            # three different ways...
-            ('mytest', 'all'),
-            ('mytest', 'winner'),
-            ('mytest', ['2-y']),
-        ]
-        async for result in db.read(req):
-            print(result)
-        async for change in db.changes():
-            print(change)
-            break
-        # clean up
-        print(await db.destroy())
+    async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
+        try:
+            assert await db.create()
+            assert not await db.create()
+
+            assert await db.update_seq
+            query = [('unexisting', ['1-x', '2-y']), ('abc', ['1-a'])]
+            async for change in db.revs_diff(async_iter(query)):
+                print(change)
+            # query some unexisting rev
+            docs = [
+                {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {
+                    'start': 1,
+                    'ids': ['x'],
+                }},
+                {'_id': 'mytest', '_rev': '2-y', '_deleted': True, '_revisions': {
+                    'start': 2,
+                    'ids': ['y', 'x']
+                }}
+            ]
+            async for result in db.write(async_iter(docs)):
+                print(result)  # succesful writes don't return anything
+            req = [
+                # three different ways...
+                ('mytest', 'all'),
+                ('mytest', 'winner'),
+                ('mytest', ['2-y']),
+            ]
+            async for result in db.read(async_iter(req)):
+                print(result)
+            async for change in db.changes():
+                print(change)
+                break
+
+            assert 'remote' in await db.id
+        finally:
+            # clean up
+            print(await db.destroy())

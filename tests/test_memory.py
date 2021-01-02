@@ -1,5 +1,5 @@
 import pytest
-from microcouch import InMemoryDatabase, Change
+from microcouch import InMemoryDatabase, Change, NotFound
 from microcouch.utils import async_iter, to_list
 
 
@@ -175,6 +175,17 @@ def test_old_conflict(db):
     ]
 
 
+def test_sync(db):
+    doc = {'_id': '_local/test', 'hello': 'world!'}
+    db.write_sync(doc)
+    assert list(db.read_sync('_local/test', 'winner')) == [
+        {'_id': '_local/test', '_rev': '0-1', 'hello': 'world!'}
+    ]
+    db.write_sync({'_id': '_local/test', '_deleted': True})
+    with pytest.raises(NotFound):
+        next(db.read_sync('_local/test', 'winner'))
+
+
 @pytest.mark.asyncio
 async def test_async(db):
     assert await db.update_seq == 0
@@ -209,3 +220,8 @@ async def test_async(db):
     assert await to_list(db.changes()) == [
         Change('mytest', seq=2, deleted=True, leaf_revs=['2-y'])
     ]
+    # try never-existing doc
+    errors = await to_list(db.read(async_iter([('abc', 'winner')])))
+    assert len(errors) == 1 and isinstance(errors[0], NotFound)
+
+    assert 'memory' in await db.id

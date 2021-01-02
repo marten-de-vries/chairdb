@@ -17,14 +17,3 @@ def parse_query_arg(request, name, default=None):
         return json.loads(json_or_string)
     except ValueError:
         return json_or_string
-
-
-def as_json(item):
-    return json.dumps(item, separators=(",", ":"), cls=SetEncoder)
-
-
-class SetEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, set):
-            return list(obj)
-        return super().default(obj)

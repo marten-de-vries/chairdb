@@ -5,10 +5,12 @@ from starlette.routing import Route
 
 import aioitertools
 
+import contextlib
 import uuid
 
-from ..utils import async_iter, to_list
-from .utils import JSONResp, parse_query_arg, as_json
+from ..utils import async_iter, to_list, as_json
+from ..errors import NotFound
+from .utils import JSONResp, parse_query_arg
 
 FULL_COMMIT = {
     'instance_start_time': "0",
@@ -124,7 +126,7 @@ def local_docs(request):
 
 def stream_local_docs(request):
     yield '{"rows": ['
-    for i, doc in enumerate(db.local.values()):
+    for i, doc in enumerate(get_db(request)._local.values()):
         if i > 0:
             yield ','
         yield as_json({
@@ -158,21 +160,9 @@ async def stream_bulk_get(db, req, include_path):
 
 
 class Document(HTTPEndpoint):
-    # local docs
     async def get(self, request):
         doc_id = request.path_params['id']
-        if doc_id.startswith('_local/'):
-            return self._get_local(get_db(request), doc_id[len('_local/'):])
-        else:
-            return await self._get_normal(request, doc_id)
 
-    def _get_local(self, db, doc_id):
-        try:
-            return JSONResp(db.local[doc_id])
-        except KeyError:
-            return JSONResp(DOC_NOT_FOUND, 404)
-
-    async def _get_normal(self, request, doc_id):
         rev = parse_query_arg(request, 'rev')
         revs = parse_query_arg(request, 'open_revs')
         if revs is None:
@@ -185,12 +175,10 @@ class Document(HTTPEndpoint):
         resp = get_db(request).read(async_iter([(doc_id, revs)]), include_path)
 
         resp_peek, resp_orig = aioitertools.tee(resp)
-        try:
-            first_two = await to_list(aioitertools.islice(resp_peek, 2))
-        except KeyError:
+        first_two = await to_list(aioitertools.islice(resp_peek, 2))
+        if isinstance(first_two[0], NotFound):
             return JSONResp(DOC_NOT_FOUND, 404)
-        else:
-            multi = len(first_two) == 2
+        multi = len(first_two) == 2
         if multi or 'application/json' not in request.headers['accept']:
             # multipart
             boundary = uuid.uuid4().hex
@@ -198,7 +186,7 @@ class Document(HTTPEndpoint):
             generator = self._multipart_response(resp_orig, boundary)
             return StreamingResponse(generator, media_type=mt)
         else:
-            return JSONResp(aioitertools.next(resp_orig))
+            return JSONResp(first_two[0])
 
     async def _multipart_response(self, items, boundary):
         async for item in items:
@@ -210,22 +198,24 @@ class Document(HTTPEndpoint):
         doc_id = request.path_params['id']
         if not doc_id.startswith('_local/'):
             return JSONResp(DOC_NOT_FOUND, 404)  # FIXME
-        doc_id = doc_id[len('_local/'):]
 
         doc = await request.json()
-        get_db(request).local[doc_id] = doc
+
+        with contextlib.suppress(StopAsyncIteration):
+            await aioitertools.next(get_db(request).write(async_iter([doc])))
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 
-    def delete(self, request):
+    async def delete(self, request):
         doc_id = request.path_params['id']
         assert doc_id.startswith('_local/')
-        doc_id = doc_id[len('_local/'):]
 
+        docs = async_iter([{'_id': doc_id, '_deleted': True}])
         try:
-            del get_db(request).local[doc_id]
-        except KeyErrror:
+            await aioitertools.next(get_db(request).write(docs))
+        except StopAsyncIteration:
+            return JSONResp({'id': doc_id, 'ok': True, 'rev': '0-1'})
+        else:
             return JSONResp(DOC_NOT_FOUND, 404)
-        return JSONResp({'id': doc_id, 'ok': True, 'rev': '0-1'})
 
     def copy(sef, request):
         raise NotImplementedError()

@@ -1,3 +1,7 @@
+import json
+import typing
+
+
 def rev(rev_num, rev_info):
     return f'{rev_num}-{rev_info.rev_hash}'
 
@@ -14,3 +18,21 @@ async def async_iter(iterable):
 
 async def to_list(asynciterable):
     return [x async for x in asynciterable]
+
+
+class Change(typing.NamedTuple):
+    id: str
+    seq: int
+    deleted: bool
+    leaf_revs: list
+
+
+def as_json(item):
+    return json.dumps(item, separators=(",", ":"), cls=SetEncoder)
+
+
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return super().default(obj)
