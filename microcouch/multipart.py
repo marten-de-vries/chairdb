@@ -1,19 +1,83 @@
 import contextlib
+import re
+
+MULTIPART_REGEX = 'multipart/(?:mixed|related); boundary="?([^"$]+)"?$'
+
+
+class MultipartResponseParser:
+    """Makes it easy to parse a httpx stream multipart response in async
+    fashion. It takes the response as constructor argument, and when (async)
+    iterated over it gives you Part-s.
+
+    """
+    def __init__(self, response):
+        self.input = response.aiter_bytes()
+        self.parser = MultipartParser(response.headers['Content-Type'])
+
+    async def continue_parsing(self):
+        self.parser.feed(await self.input.__anext__())
+
+    async def __aiter__(self):
+        keep_parsing = True
+        while keep_parsing:
+            # read more input
+            try:
+                await self.continue_parsing()
+            except StopAsyncIteration:
+                keep_parsing = False
+
+            # process input
+            for part in self.parser.results:
+                yield Part(part, self)
+            self.parser.results.clear()
+
+        # make sure the input wasn't incomplete
+        self.parser.check_done()
+
+
+class Part:
+    """Mimics the parts of httpx's stream response we use."""
+
+    def __init__(self, info, parser):
+        self.info = info
+        self.parser = parser
+
+    @property
+    def headers(self):
+        return self.info['headers']
+
+    async def aread(self):
+        while not self.info['done']:
+            await self.parser.continue_parsing()
+        return self.info['body']
+
+    async def aiter_bytes(self):
+        while True:
+            yield bytes(self.info['body'])
+            self.info['body'].clear()
+            if self.info['done']:
+                break
+            await self.parser.continue_parsing()
 
 
 class MultipartParser:
+    """A multipart/mixed and multipart/related push parser compatible with
+    CouchDB. No specification was consulted while writing this, so any
+    deviations from the appropriate standards are most likely bugs.
+
+    """
     class OutOfData(Exception):
         pass
 
-    def __init__(self, boundary):
-        self.boundary = b'--' + boundary
+    def __init__(self, content_type):
+        match = re.match(MULTIPART_REGEX, content_type)
+        assert match
+
+        self.boundary = b'--' + match[1].encode('UTF-8')
 
         self.state = self.START
         self.cache = bytearray()
         self.results = []
-
-        self.current_headers = None
-        self.current_data = None
 
     def feed(self, chunk):
         self.cache.extend(chunk)
@@ -24,7 +88,6 @@ class MultipartParser:
     def check_done(self):
         if self.state != self.DONE:
             raise ValueError("Incomplete data!")
-        self.state()
 
     def change_state(self, new_state):
         self.state = new_state
@@ -36,7 +99,6 @@ class MultipartParser:
 
     def READ_BOUNDARY_END(self):
         if self.cache[:2] == b'--':
-            self.cache = self.cache[2:]
             self.change_state(self.DONE)
         else:
             assert self._data_before(b'\r\n') == b''
@@ -57,7 +119,11 @@ class MultipartParser:
                 key, value = line.decode('UTF-8').split(': ', maxsplit=1)
                 self.current_headers[key] = value
             else:
-                self.current_data = bytearray()
+                self.results.append({
+                    'headers': self.current_headers,
+                    'body': bytearray(),
+                    'done': False
+                })
                 self.change_state(self.READ_DOC)
 
     def READ_DOC(self):
@@ -65,16 +131,13 @@ class MultipartParser:
             data = self._data_before(self.boundary)
         except self.OutOfData:
             # move input that cannot contain the boundary out of the way.
-            self.current_data.extend(self.cache[:-len(self.boundary)])
+            self.results[-1]['body'].extend(self.cache[:-len(self.boundary)])
             del self.cache[:-len(self.boundary)]
             # ... but re-raise, as we still need to find the boundary.
             raise
-        self.current_data.extend(data)
-        self.results.append((self.current_headers, self.current_data))
-        self.current_headers = None
-        self.current_data = None
+        self.results[-1]['body'].extend(data)
+        self.results[-1]['done'] = True
         self.change_state(self.READ_BOUNDARY_END)
 
     def DONE(self):
-        if self.cache:
-            raise ValueError("Unexpected data!")
+        self.cache.clear()

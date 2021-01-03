@@ -1,7 +1,8 @@
 from .memory import InMemoryDatabase
 from .remote import HTTPDatabase
-from .utils import Change
-from .errors import MicroCouchError, Unauthorized, Forbidden, NotFound
+from .replicate import replicate
+from .datatypes import (MicroCouchError, Unauthorized, Forbidden, NotFound,
+                        Change)
 
 __all__ = ('InMemoryDatabase', 'HTTPDatabase', 'Change', 'MicroCouchError',
-           'Unauthorized', 'Forbidden', 'NotFound')
+           'Unauthorized', 'Forbidden', 'NotFound', 'replicate')

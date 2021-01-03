@@ -1,7 +1,10 @@
+import ijson
+
+import contextlib
 import json
-import typing
 
 
+# rev helpers
 def rev(rev_num, rev_info):
     return f'{rev_num}-{rev_info.rev_hash}'
 
@@ -9,6 +12,36 @@ def rev(rev_num, rev_info):
 def parse_rev(rev):
     num, hash = rev.split('-')
     return int(num), hash
+
+
+# JSON helpers
+def as_json(item):
+    return json.dumps(item, separators=(",", ":"), cls=SetEncoder)
+
+
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        assert isinstance(obj, set)
+        return list(obj)
+
+
+async def parse_json_stream(stream, type, prefix):
+    results = ijson.sendable_list()
+    coro = getattr(ijson, type + '_coro')(results, prefix)
+    async for chunk in stream:
+        with contextlib.suppress(StopIteration):
+            coro.send(chunk)
+        for result in results:
+            yield result
+        results.clear()
+
+
+# async helpers
+async def aenumerate(iterable):
+    counter = 0
+    async for item in iterable:
+        yield counter, item
+        counter += 1
 
 
 async def async_iter(iterable):
@@ -20,19 +53,20 @@ async def to_list(asynciterable):
     return [x async for x in asynciterable]
 
 
-class Change(typing.NamedTuple):
-    id: str
-    seq: int
-    deleted: bool
-    leaf_revs: list
+async def peek(aiterable, n=2):
+    first_n = await to_list(take_n(aiterable, n))
+    return first_n, combine(first_n, aiterable)
 
 
-def as_json(item):
-    return json.dumps(item, separators=(",", ":"), cls=SetEncoder)
+async def take_n(aiterable, n):
+    async for i, item in aenumerate(aiterable):
+        yield item
+        if i + 1 == n:
+            break
 
 
-class SetEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, set):
-            return list(obj)
-        return super().default(obj)
+async def combine(iterable, aiterable):
+    for item in iterable:
+        yield item
+    async for item in aiterable:
+        yield item

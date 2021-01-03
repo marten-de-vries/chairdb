@@ -1,15 +1,21 @@
+"""A CouchDB-compatible HTTP server backed by a database specified by
+app.state.db or request.state.db. One of these can either be set manually
+(when only a limited amount of databases needs to be exposed), or
+programmatically by middleware. An example of that is given by __init__, which
+builds a full CouchDB-compatible server out of in-memory databases.
+
+"""
+
 from starlette.applications import Starlette
 from starlette.endpoints import HTTPEndpoint
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
-import aioitertools
-
-import contextlib
 import uuid
 
-from ..utils import async_iter, to_list, as_json
-from ..errors import NotFound
+from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
+                     parse_json_stream)
+from ..datatypes import NotFound
 from .utils import JSONResp, parse_query_arg
 
 FULL_COMMIT = {
@@ -50,37 +56,38 @@ def changes(request):
 
 
 async def stream_changes(db):
-    yield '{"results": ['
+    yield '{"results": [\n'
     last_seq = 0
 
-    async for i, change in aioitertools.enumerate(db.changes()):
+    async for i, change in aenumerate(db.changes()):
         if i > 0:
-            yield ','
+            yield ',\n'
         id, seq, deleted, leaf_revs = change
-        changes = [{'_rev': rev} for rev in leaf_revs]
+        changes = [{'rev': rev} for rev in leaf_revs]
         row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
         yield as_json(row)
         last_seq = change.seq
-    yield f'], "last_seq": {last_seq}, "pending": 0}}\n'
+    yield f'\n], "last_seq": {last_seq}, "pending": 0}}\n'
 
 
 async def revs_diff(request):
-    remote = await request.json()
-    generator = stream_revs_diff(get_db(request), remote.items())
+    remote = parse_json_stream(request.stream(), 'kvitems', '')
+    generator = stream_revs_diff(get_db(request), remote)
     return StreamingResponse(generator, media_type='application/json')
 
 
 async def stream_revs_diff(db, remote):
     yield '{'
-    result = db.revs_diff(async_iter(remote))
-    async for i, (id, info) in aioitertools.enumerate(result):
+    result = db.revs_diff(remote)
+    async for i, (id, info) in aenumerate(result):
         if i > 0:
             yield ','
         yield f'{as_json(id)}:{as_json(info)}'
     yield '}\n'
 
 
-def ensure_full_commit(request):
+async def ensure_full_commit(request):
+    await get_db(request).ensure_full_commit()
     return JSONResp(FULL_COMMIT, 201)
 
 
@@ -112,7 +119,7 @@ async def bulk_docs(request):
 async def bulk_docs_stream(db, req):
     yield '['
     result = db.write(async_iter(req))
-    async for i, error in aioitertools.enumerate(result):
+    async for i, error in aenumerate(result):
         if i > 0:
             yield ','
         yield as_json(error)  # crash likely
@@ -124,9 +131,9 @@ def local_docs(request):
     return StreamingResponse(generator, media_type='application/json')
 
 
-def stream_local_docs(request):
+def stream_local_docs(db):
     yield '{"rows": ['
-    for i, doc in enumerate(get_db(request)._local.values()):
+    for i, doc in enumerate(db._local.values()):
         if i > 0:
             yield ','
         yield as_json({
@@ -138,23 +145,39 @@ def stream_local_docs(request):
 
 
 async def bulk_get(request):
-    req = {}
-    for doc in (await request.json())['docs']:
-        revs = req.setdefault(doc['_id'], [])
-        try:
-            revs.append(doc['_rev'])
-            assert parse_query_arg(request, 'latest')
-        except KeyError:
-            req[doc['_id']] = 'all'
-        include_path = parse_query_arg(request, 'revs')
+    req = parse_bulk_get_request(request)
+    include_path = parse_query_arg(request, 'revs')
     generator = stream_bulk_get(get_db(request), req, include_path)
     return StreamingResponse(generator, media_type='application/json')
 
 
+async def parse_bulk_get_request(request):
+    async for id, docs in group_by(request.stream(), key=lambda d: d['id']):
+        try:
+            revs = [doc['rev'] for doc in docs]
+        except KeyError:
+            revs = 'all'
+        yield id, revs
+
+
+async def group_by(stream, key):
+    try:
+        first_doc = await stream.__anext__()
+    except StopAsyncIteration:
+        return
+
+    last_key, docs = key(first_doc), [first_doc]
+    for doc in stream:
+        if key(doc) != last_key:
+            yield last_key, docs
+            last_key, docs = key(doc), []
+        docs.append(stream)
+    yield last_key, docs
+
+
 async def stream_bulk_get(db, req, include_path):
     yield '{"results": ['
-    result = db.read(req.items(), include_path)
-    async for i, doc in aioitertools.enumerate(result):
+    async for i, doc in aenumerate(db.read(req, include_path)):
         yield as_json({'docs': [{'ok': doc}], 'id': doc['_id']})
     yield ']}\n'
 
@@ -162,7 +185,26 @@ async def stream_bulk_get(db, req, include_path):
 class Document(HTTPEndpoint):
     async def get(self, request):
         doc_id = request.path_params['id']
+        revs = self._parse_revs(request)
+        include_path = parse_query_arg(request, 'revs', default=False)
 
+        resp = get_db(request).read(async_iter([(doc_id, revs)]), include_path)
+
+        first_two, resp_orig = await peek(resp, n=2)
+        if isinstance(first_two[0], NotFound):
+            return JSONResp(DOC_NOT_FOUND, 404)
+
+        multi = len(first_two) == 2
+        if multi or 'application/json' not in request.headers['accept']:
+            # multipart
+            boundary = uuid.uuid4().hex
+            mt = f'multipart/mixed; boundary="{boundary}"'
+            generator = self._multipart_response(resp_orig, boundary)
+            return StreamingResponse(generator, media_type=mt)
+        else:
+            return JSONResp(first_two[0])
+
+    def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
         revs = parse_query_arg(request, 'open_revs')
         if revs is None:
@@ -171,22 +213,7 @@ class Document(HTTPEndpoint):
             else:
                 revs = [rev]
         assert revs in ['winner', 'all'] or parse_query_arg(request, 'latest')
-        include_path = parse_query_arg(request, 'revs', default=False)
-        resp = get_db(request).read(async_iter([(doc_id, revs)]), include_path)
-
-        resp_peek, resp_orig = aioitertools.tee(resp)
-        first_two = await to_list(aioitertools.islice(resp_peek, 2))
-        if isinstance(first_two[0], NotFound):
-            return JSONResp(DOC_NOT_FOUND, 404)
-        multi = len(first_two) == 2
-        if multi or 'application/json' not in request.headers['accept']:
-            # multipart
-            boundary = uuid.uuid4().hex
-            mt = f'multipart/mixed; boundary={boundary}'
-            generator = self._multipart_response(resp_orig, boundary)
-            return StreamingResponse(generator, media_type=mt)
-        else:
-            return JSONResp(first_two[0])
+        return revs
 
     async def _multipart_response(self, items, boundary):
         async for item in items:
@@ -201,8 +228,7 @@ class Document(HTTPEndpoint):
 
         doc = await request.json()
 
-        with contextlib.suppress(StopAsyncIteration):
-            await aioitertools.next(get_db(request).write(async_iter([doc])))
+        await to_list(get_db(request).write(async_iter([doc])))
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 
     async def delete(self, request):
@@ -211,7 +237,7 @@ class Document(HTTPEndpoint):
 
         docs = async_iter([{'_id': doc_id, '_deleted': True}])
         try:
-            await aioitertools.next(get_db(request).write(docs))
+            await get_db(request).write(docs).__anext__()
         except StopAsyncIteration:
             return JSONResp({'id': doc_id, 'ok': True, 'rev': '0-1'})
         else:
@@ -221,9 +247,13 @@ class Document(HTTPEndpoint):
         raise NotImplementedError()
 
 
-# main entry function
-
 def build_db_app(**opts):
+    """Instead of just exporting an app, we allow you to create one yourself
+    such that you can add middleware to set e.g. request.state.db
+
+    This is the main entry point for this module.
+
+    """
     return Starlette(routes=[
         Route('/', Database),
         Route('/_changes', changes),
