@@ -4,16 +4,6 @@ import contextlib
 import json
 
 
-# rev helpers
-def rev(rev_num, rev_info):
-    return f'{rev_num}-{rev_info.rev_hash}'
-
-
-def parse_rev(rev):
-    num, hash = rev.split('-')
-    return int(num), hash
-
-
 # JSON helpers
 def as_json(item):
     return json.dumps(item, separators=(",", ":"), cls=SetEncoder)

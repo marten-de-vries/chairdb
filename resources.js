@@ -3,6 +3,7 @@
 // couchdb impl info: https://horicky.blogspot.com/2008/10/couchdb-implementation.html
 // pouchdb-next: https://github.com/pouchdb/pouchdb/issues/3775 / https://github.com/pouchdb/pouchdb/pull/4984
 // https://github.com/kxepal/replipy
+// https://www.garrensmith.com/blogs/mini-couch-hack-week
 
 var allDocs_result = {
   "total_rows": 1,
