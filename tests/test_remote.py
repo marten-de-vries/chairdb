@@ -3,8 +3,20 @@ import pytest
 from microcouch import HTTPDatabase
 from microcouch.utils import async_iter
 
+DOCS = [
+    {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {
+        'start': 1,
+        'ids': ['x'],
+    }},
+    {'_id': 'mytest', '_rev': '2-y', '_deleted': True, '_revisions': {
+        'start': 2,
+        'ids': ['y', 'x']
+    }}
+]
+
+
 @pytest.mark.asyncio
-async def test_remote():
+async def test_remote():  # noqa: C901
     url = 'http://localhost:5984/test'
     async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
         try:
@@ -12,21 +24,11 @@ async def test_remote():
             assert not await db.create()
 
             assert await db.update_seq
+            # query some unexisting rev
             query = [('unexisting', ['1-x', '2-y']), ('abc', ['1-a'])]
             async for change in db.revs_diff(async_iter(query)):
                 print(change)
-            # query some unexisting rev
-            docs = [
-                {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {
-                    'start': 1,
-                    'ids': ['x'],
-                }},
-                {'_id': 'mytest', '_rev': '2-y', '_deleted': True, '_revisions': {
-                    'start': 2,
-                    'ids': ['y', 'x']
-                }}
-            ]
-            async for result in db.write(async_iter(docs)):
+            async for result in db.write(async_iter(DOCS)):
                 print(result)  # succesful writes don't return anything
             req = [
                 # three different ways...

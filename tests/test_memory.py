@@ -37,7 +37,7 @@ def test_read_all(db):
 
 
 def test_revs_diff(db):
-    doc = insert_doc(db)
+    insert_doc(db)
     assert db.revs_diff_sync('test', ['1-a', '1-b']) == ('test', {
         'missing': {'1-b'},
     })
@@ -54,7 +54,7 @@ def test_changes(db):
 
 
 def test_overwrite(db):
-    doc = insert_doc(db)
+    insert_doc(db)
     db.write_sync({'_id': 'test', '_rev': '2-a', 'hello': 'everyone'})
     assert list(db.read_sync('test', 'winner')) == [
         {'_id': 'test', '_rev': '2-a', 'hello': 'everyone'},
@@ -86,7 +86,7 @@ def test_linear_history(db):
 
 
 def test_remove(db):
-    doc = insert_doc(db)
+    insert_doc(db)
     doc2 = {'_id': 'test', '_rev': '2-b', '_deleted': True, 'other': 'data',
             '_revisions': {'start': 2, 'ids': ['b', 'a']}}
     db.write_sync(doc2)

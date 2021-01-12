@@ -1,3 +1,6 @@
+# TODO: clean up & make nice.
+# TODO: revs limit (+ update documentation)
+
 import bisect
 import collections
 import functools
@@ -16,9 +19,6 @@ class Leaf(typing.NamedTuple):
         # this essentially handles auto-compaction
         return Node(self.rev_hash, [tree]), [max_rev]
 
-    def as_tree(self, rev_num):
-        yield f'{rev_num}-{self.rev_hash}: {self.doc_ptr}'
-
 
 class Node(typing.NamedTuple):
     """A past revision of one (or more) of the leafs of the document. For child
@@ -32,17 +32,6 @@ class Node(typing.NamedTuple):
         insert_child(self.children, max_revs, max_rev, tree)
         return self, max_revs
 
-    def as_tree(self, rev_num):
-        this = f'{rev_num}-{self.rev_hash} '
-        first = True
-        for child in self.children:
-            for line in child.as_tree(rev_num + 1):
-                if first:
-                    first = False
-                    yield this + line
-                else:
-                    yield len(this) * ' ' + line
-
 
 class Root(typing.NamedTuple):
     """A start of a tree. There can be multiple starts if the initial revisions
@@ -55,14 +44,6 @@ class Root(typing.NamedTuple):
     """
     start_rev_num: int
     tree: typing.Union[Node, Leaf]
-
-    def with_child(self, *args, **kwargs):
-        # proxy, then re-wrap
-        tree, max_revs = self.tree.with_child(*args, **kwargs)
-        return Root(self.start_rev_num, tree), max_revs
-
-    def as_tree(self):
-        return '\n'.join(self.tree.as_tree(self.start_rev_num))
 
 
 class RevisionTree(typing.NamedTuple):
@@ -93,9 +74,6 @@ class RevisionTree(typing.NamedTuple):
 
     """
     children: list
-
-    def as_tree(self):
-        return '\n\n'.join(root.as_tree() for root in self.children)
 
     def with_child(self, max_revs, max_rev, tree):
         insert_child(self.children, max_revs, max_rev, tree)
@@ -326,3 +304,28 @@ def by_last_rev_recur(rev_num, node):
     if isinstance(node, Leaf):
         return rev_num, node.rev_hash
     return by_last_rev_recur(rev_num + 1, node.children[-1])
+
+
+# debugging stuff:
+
+def as_tree_node(node, rev_num):
+    if isinstance(node, Leaf):
+        yield f'{rev_num}-{node.rev_hash}: {node.doc_ptr}'
+    else:
+        this = f'{rev_num}-{node.rev_hash} '
+        first = True
+        for child in node.children:
+            for line in as_tree_node(child, rev_num + 1):
+                if first:
+                    first = False
+                    yield this + line
+                else:
+                    yield len(this) * ' ' + line
+
+
+def as_tree_root(root):
+    return '\n'.join(as_tree_node(root.tree, root.start_rev_num))
+
+
+def as_tree(rev_tree):
+    return '\n\n'.join(as_tree_root(root) for root in rev_tree.children)

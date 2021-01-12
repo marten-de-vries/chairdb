@@ -49,23 +49,40 @@ class Database(HTTPEndpoint):
 
 def changes(request):
     style = parse_query_arg(request, 'style', default='main_only')
+    since = int(parse_query_arg(request, 'since', default=0))
+    feed = parse_query_arg(request, 'feed', default='normal')
     assert style == 'all_docs'
+    continuous = feed == 'continuous'
 
-    generator = stream_changes(get_db(request))
-    return StreamingResponse(generator, media_type='application/json')
+    changes = get_db(request).changes(since, continuous)
+    if continuous:
+        generator = stream_changes_continuous(changes)
+        return StreamingResponse(generator, media_type='text/plain')
+    else:
+        generator = stream_changes(changes)
+        return StreamingResponse(generator, media_type='application/json')
 
 
-async def stream_changes(db):
+async def stream_changes_continuous(changes):
+    async for change in changes:
+        yield change_row_json(change)
+
+
+def change_row_json(change):
+    id, seq, deleted, leaf_revs = change
+    changes = [{'rev': rev} for rev in leaf_revs]
+    row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
+    return f'{as_json(row)}\n'
+
+
+async def stream_changes(changes):
     yield '{"results": [\n'
     last_seq = 0
 
-    async for i, change in aenumerate(db.changes()):
+    async for i, change in aenumerate(changes):
         if i > 0:
             yield ',\n'
-        id, seq, deleted, leaf_revs = change
-        changes = [{'rev': rev} for rev in leaf_revs]
-        row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
-        yield as_json(row)
+        yield change_row_json(change)
         last_seq = change.seq
     yield f'\n], "last_seq": {last_seq}, "pending": 0}}\n'
 
@@ -100,10 +117,11 @@ def all_docs_stream(db):
     yield '{"offset":0,"rows":['
     total = 0
     for key, doc_info in db._byid.items():
-        if doc_info.winner_leaf.doc_ptr:
+        leaf = doc_info.winning_leaf
+        if leaf.doc_ptr:
             if total != 0:
                 yield ','
-            rev = f'{doc_info.winner_rev_num}-{doc_info.winner_leaf.rev_hash}'
+            rev = f'{doc_info.winning_rev_num}-{leaf.rev_hash}'
             yield as_json({'id': key, 'key': key, 'value': {'rev': rev}})
             total += 1
     yield f'],"total_rows":{total}}}\n'

@@ -11,6 +11,7 @@ from .multipart import MultipartResponseParser
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}
 MAX_PARALLEL_READS = 10
+FIRST_DONE = asyncio.FIRST_COMPLETED
 
 
 class HTTPDatabase(httpx.AsyncClient):
@@ -66,23 +67,35 @@ class HTTPDatabase(httpx.AsyncClient):
         return self._get_id()
 
     async def _get_id(self):
-        try:
-            base_id = (await self._request('GET', '../')).json()['uuid']
-        except KeyError:
-            base_id = ''
+        base_id = (await self._request('GET', '../')).json()['uuid']
         return base_id + str(self.base_url) + 'remote'
 
-    async def changes(self, since=None):
+    async def changes(self, since=None, continuous=False):
         params = {'style': 'all_docs'}
+        opts = {}
         if since is not None:
             params['since'] = since
-        async with self._stream('GET', '/_changes', params=params) as resp:
-            assert resp.status_code == httpx.codes.OK
-            async for c in parse_json_stream(resp.aiter_bytes(), 'items',
-                                             'results.item'):
+        if continuous:
+            params['feed'] = 'continuous'
+            opts['timeout'] = None
+        stream = self._stream('GET', '/_changes', params=params, **opts)
+        async with stream as resp:
+            async for c in self._parse_changes_response(resp, continuous):
+                # TODO: handle timeouts
                 deleted = c.get('deleted', False)
                 leaf_revs = [item['rev'] for item in c['changes']]
                 yield Change(c['id'], c['seq'], deleted, leaf_revs)
+
+    async def _parse_changes_response(self, resp, continuous):
+        assert resp.status_code == httpx.codes.OK
+        if continuous:
+            async for line in resp.aiter_lines():
+                if line.strip():
+                    yield json.loads(line)
+        else:
+            async for obj in parse_json_stream(resp.aiter_bytes(), 'items',
+                                               'results.item'):
+                yield obj
 
     async def revs_diff(self, remote):
         body = self._revs_diff_body(remote)
@@ -125,20 +138,37 @@ class HTTPDatabase(httpx.AsyncClient):
         # the method for reading the docs in parallel is inspired by:
         # https://stackoverflow.com/a/55317623
 
-        tasks = []
         queue = asyncio.Queue()
+        read_task = asyncio.create_task(self._read_task(requested,
+                                                        include_path, queue))
+
+        # keep waiting until reading is done, but also quickly return results
+        # as they become available.
+        while True:
+            get_task = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait([read_task, get_task],
+                                               return_when=FIRST_DONE)
+            if get_task in done:
+                yield await get_task
+            if read_task in done:
+                get_task.cancel()
+                break
+        # reading is done, empty the queue.
+        while not queue.empty():
+            yield queue.get_nowait()
+
+    async def _read_task(self, requested, include_path, queue):
+        # read MAX_PARALLEL_READS docs at the same time. Results are put into
+        # 'queue'
+        tasks = set()
         async for id, revs in requested:
             params = self._read_params(id, revs, include_path)
-
             docs = self._read_doc(id, revs, params)
-            tasks.append(asyncio.create_task(self._drain_into(docs, queue)))
-            while len(tasks) >= MAX_PARALLEL_READS:
-                yield await queue.get()
-                tasks = [task for task in tasks if not task.done()]
 
-        while tasks:
-            yield await queue.get()
-            tasks = [task for task in tasks if not task.done()]
+            tasks.add(asyncio.create_task(self._drain_into(docs, queue)))
+            while len(tasks) >= MAX_PARALLEL_READS:
+                _, tasks = await asyncio.wait(tasks, return_when=FIRST_DONE)
+        await asyncio.wait(tasks)
 
     def _read_params(self, id, revs, include_path):
         params = {'latest': 'true'}

@@ -16,8 +16,6 @@ async def replicate(source, target, create_target=False, continuous=False):
     https://docs.couchdb.org/en/stable/replication/protocol.html
 
     """
-    assert not continuous  # not supported (yet?)
-
     hist_entry = {'session_id': uuid.uuid4().hex,
                   'start_time': timestamp(),
                   'doc_write_failures': 0,
@@ -48,8 +46,8 @@ async def replicate(source, target, create_target=False, continuous=False):
     # 2.4.2.4. Locate Changed Documents
     # - 2.4.2.4.1. Listen to Changes Feed
     # - 2.4.2.4.2. Read Batch of Changes
-    diff_input = bulk_revs_input(source.changes(since=startup_checkpoint),
-                                 hist_entry)
+    changes = source.changes(since=startup_checkpoint, continuous=continuous)
+    diff_input = revs_diff_input(changes, hist_entry)
 
     # - 2.4.2.4.3. Calculate Revision Difference
     r_input = read_input(target.revs_diff(diff_input))
@@ -147,7 +145,7 @@ def compare_replication_logs(source, target):
     # no such luck: there's no known checkpoint.
 
 
-async def bulk_revs_input(changes, history_entry):
+async def revs_diff_input(changes, history_entry):
     async for change in changes:
         yield change.id, change.leaf_revs
         history_entry['recorded_seq'] = change.seq

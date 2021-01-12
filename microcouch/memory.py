@@ -84,6 +84,11 @@ class SyncInMemoryDatabase:
             del self._byseq[old_seq]
         self._byseq[self.update_seq_sync] = id
 
+        self.on_update_sync()  # callback
+
+    def on_update_sync(self):
+        """A callback for (non-local) document updates - for subclass use."""
+
     def _prepare_doc(self, doc):
         rev_num, rev_hash = self._parse_rev(doc.pop('_rev'))
         revs = doc.pop('_revisions', {'start': rev_num, 'ids': [rev_hash]})
@@ -195,6 +200,15 @@ class InMemoryDatabase(SyncInMemoryDatabase):
     you do so if at all possible as the asynchronous methods just add overhead.
 
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._update_event = asyncio.Event()
+
+    def on_update_sync(self):
+        self._update_event.set()
+        self._update_event = asyncio.Event()
+
     @property
     def id(self):
         """For identification of this specific database during replication. For
@@ -217,11 +231,20 @@ class InMemoryDatabase(SyncInMemoryDatabase):
         """
         return self._as_future_result(self.update_seq_sync)
 
-    async def changes(self, since=None):
+    async def changes(self, since=None, continuous=False):
         """"Like CouchDB's _changes with style=all_docs"""
 
-        for change in self.changes_sync(since):
-            yield change
+        while True:
+            # send (new) changes to the caller
+            for change in self.changes_sync(since):
+                since = change.seq
+                yield change
+
+            if not continuous:
+                # stop immediately.
+                break
+            # wait for new changes to come available, then loop
+            await self._update_event.wait()
 
     async def revs_diff(self, remote):
         """Like CouchDB's _revs_diff"""

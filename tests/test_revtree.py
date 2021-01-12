@@ -1,73 +1,82 @@
 from microcouch.revtree import (RevisionTree, Root, Node, Leaf, preorder_only,
-                                track_max_revs, validate_rev_tree)
+                                track_max_revs, validate_rev_tree, as_tree)
+
+
+#        a
+#   b         c
+# d   e     f   g
+#
+TREE = RevisionTree([
+    Root(1, Node('a', [
+        Node('b', [
+            Leaf('d', {}),
+            Leaf('e', {}),
+        ]),
+        Node('c', [
+            Leaf('f', {}),
+            Leaf('g', {}),
+        ]),
+    ])),
+])
+
+
+def test_debug():
+    assert as_tree(TREE) == """1-a 2-b 3-d: {}
+        3-e: {}
+    2-c 3-f: {}
+        3-g: {}"""
 
 
 def test_walk():
-    #        1
-    #   2         3
-    # 4   5     6   7
-    #
-    tree = RevisionTree([
-        Root(1, Node('1', [
-            Node('2', [
-                Leaf('4', {}),
-                Leaf('5', {}),
-            ]),
-            Node('3', [
-                Leaf('6', {}),
-                Leaf('7', {}),
-            ]),
-        ])),
-    ])
-
     walk1 = [(rev_num, node.rev_hash)
-             for node, rev_num, _ in preorder_only(tree._walk())]
+             for node, rev_num, _ in preorder_only(TREE._walk())]
     assert walk1 == [
-        (1, '1'),
-        (2, '3'),
-        (3, '7'),
-        (3, '6'),
-        (2, '2'),
-        (3, '5'),
-        (3, '4'),
+        (1, 'a'),
+        (2, 'c'),
+        (3, 'g'),
+        (3, 'f'),
+        (2, 'b'),
+        (3, 'e'),
+        (3, 'd'),
     ]
 
     walk2 = [(rev_num, node.rev_hash, preorder)
-             for node, preorder, rev_num, _ in tree._walk()]
+             for node, preorder, rev_num, _ in TREE._walk()]
     assert walk2 == [
-        (1, '1', True),
-        (2, '3', True),
-        (3, '7', True),
-        (3, '7', False),
-        (3, '6', True),
-        (3, '6', False),
-        (2, '3', False),
-        (2, '2', True),
-        (3, '5', True),
-        (3, '5', False),
-        (3, '4', True),
-        (3, '4', False),
-        (2, '2', False),
-        (1, '1', False),
+        (1, 'a', True),
+        (2, 'c', True),
+        (3, 'g', True),
+        (3, 'g', False),
+        (3, 'f', True),
+        (3, 'f', False),
+        (2, 'c', False),
+        (2, 'b', True),
+        (3, 'e', True),
+        (3, 'e', False),
+        (3, 'd', True),
+        (3, 'd', False),
+        (2, 'b', False),
+        (1, 'a', False),
     ]
 
     max_revs_stack = [[]]
-    walk3 = track_max_revs(tree._walk(), max_revs_stack)
+    walk3 = track_max_revs(TREE._walk(), max_revs_stack)
     assert max_revs_stack == [[]]
     # copy on each iteration, because max_revs_stack is modified in-place
     walk3resp = [(rev_num, node.rev_hash, [s[:] for s in max_revs_stack])
                  for node, rev_num, _ in walk3]
     assert walk3resp == [
-        (3, '7', [[], [], [], [(3, '7')]]),
-        (3, '6', [[], [], [(3, '7')], [(3, '6')]]),
-        (2, '3', [[], [], [(3, '7'), (3, '6')]]),
-        (3, '5', [[], [(3, '7')], [], [(3, '5')]]),
-        (3, '4', [[], [(3, '7')], [(3, '5')], [(3, '4')]]),
-        (2, '2', [[], [(3, '7')], [(3, '5'), (3, '4')]]),
-        (1, '1', [[], [(3, '7'), (3, '5')]])
+        (3, 'g', [[], [], [], [(3, 'g')]]),
+        (3, 'f', [[], [], [(3, 'g')], [(3, 'f')]]),
+        (2, 'c', [[], [], [(3, 'g'), (3, 'f')]]),
+        (3, 'e', [[], [(3, 'g')], [], [(3, 'e')]]),
+        (3, 'd', [[], [(3, 'g')], [(3, 'e')], [(3, 'd')]]),
+        (2, 'b', [[], [(3, 'g')], [(3, 'e'), (3, 'd')]]),
+        (1, 'a', [[], [(3, 'g'), (3, 'e')]])
     ]
     # check at the end
-    assert max_revs_stack == [[(3, '7')]]
+    assert max_revs_stack == [[(3, 'g')]]
+
 
 def test_order():
     tree = RevisionTree([])
@@ -90,9 +99,6 @@ def test_order():
     tree.merge_with_path(doc_rev_num=1, doc_path=['c'], doc={'x': 3})
     validate_rev_tree(tree)
 
-    print('---')
-    print(tree.as_tree())
-    print('---')
     assert list(tree.leafs()) == [
         (Leaf('c', {'x': 3}), 1, None),
         (Leaf('b', {'x': 1}), 1, None),

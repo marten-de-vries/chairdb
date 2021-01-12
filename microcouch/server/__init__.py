@@ -41,7 +41,7 @@ def root(request):
     })
 
 
-def put_db(request):
+async def put_db(request):
     dbname = request.path_params['db']
     if dbname in request.app.state.dbs:
         return JSONResp(DB_EXISTS, 412)
