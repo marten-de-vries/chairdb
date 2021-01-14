@@ -142,8 +142,8 @@ class HTTPDatabase(httpx.AsyncClient):
         read_task = asyncio.create_task(self._read_task(requested,
                                                         include_path, queue))
 
-        # keep waiting until reading is done, but also quickly return results
-        # as they become available.
+        # keep reading until done, but also quickly return results as they
+        # become available.
         while True:
             get_task = asyncio.create_task(queue.get())
             done, pending = await asyncio.wait([read_task, get_task],
@@ -153,7 +153,7 @@ class HTTPDatabase(httpx.AsyncClient):
             if read_task in done:
                 get_task.cancel()
                 break
-        # reading is done, empty the queue.
+        # reading is done, empty out the queue.
         while not queue.empty():
             yield queue.get_nowait()
 

@@ -142,3 +142,85 @@ def test_new_winner():
 
     validate_rev_tree(tree)
     assert tree == target
+
+
+def test_revs_limit_basic():
+    tree = RevisionTree([])
+
+    tree.merge_with_path(doc_rev_num=2, doc_path=['b', 'a'], doc={},
+                         revs_limit=1)
+    validate_rev_tree(tree)
+
+    assert tree == RevisionTree([
+        Root(2, Leaf('b', {}))
+    ])
+
+
+def test_revs_limit_advanced():
+    # 1-a 2-b 3-c
+    #     2-f 3-g
+    tree = RevisionTree([
+        Root(1, Node('a', [
+            Node('b', [
+                Leaf('c', {})
+            ]),
+            Node('f', [
+                Leaf('g', {})
+            ])
+        ])),
+    ])
+    validate_rev_tree(tree)
+
+    # 1-a 2-f 3-g
+    #
+    # 2-b 3-c 4-d
+    tree.merge_with_path(doc_rev_num=4, doc_path=['d', 'c', 'b', 'a'], doc={},
+                         revs_limit=3)
+    validate_rev_tree(tree)
+
+    assert tree == RevisionTree([
+        Root(1, Node('a', [
+            Node('f', [
+                Leaf('g', {}),
+            ])
+        ])),
+        Root(2, Node('b', [
+            Node('c', [
+                Leaf('d', {})
+            ])
+        ]))
+    ])
+
+
+def skip_test_revs_limit_advanced2():
+    # 1-a 2-e
+    #     2-f
+    #     2-b 3-c
+    # 4-d is added
+
+    tree = RevisionTree([
+        Root(1, Node('a', [
+            Leaf('e', {}),
+            Node('b', [
+                Leaf('c', {}),
+            ]),
+        ])),
+    ])
+    validate_rev_tree(tree)
+    tree.merge_with_path(doc_rev_num=4, doc_path=['d', 'c', 'b', 'a'], doc={},
+                         revs_limit=2)
+    validate_rev_tree(tree)
+
+    # 1-a 2-e
+    #     2-f
+    # 3-c 4-d
+    #
+    # Note how 2b vanishes!
+    assert tree == RevisionTree([
+        Root(1, Node('a', [
+            Leaf('e', {}),
+        ])),
+        Root(3, Node('c', [
+            Leaf('d', {}),
+        ])),
+    ])

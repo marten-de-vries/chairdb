@@ -22,9 +22,10 @@ class DocumentInfo(typing.NamedTuple):
 class SyncInMemoryDatabase:
     """For documentation, see the InMemoryDatabase class."""
 
-    def __init__(self, id=None):
+    def __init__(self, id=None, revs_limit=1000):
         self.id_sync = (id or uuid.uuid4().hex) + 'memory'
         self.update_seq_sync = 0
+        self.revs_limit = revs_limit
 
         # id -> document (dict)
         self._local = sortedcontainers.SortedDict()
@@ -104,8 +105,9 @@ class SyncInMemoryDatabase:
         except KeyError:
             rev_tree, old_seq = RevisionTree([]), None  # new empty tree
 
-        rev_tree.merge_with_path(revs['start'], revs['ids'], doc)
-        validate_rev_tree(rev_tree)  # TODO: remove
+        rev_tree.merge_with_path(revs['start'], revs['ids'], doc,
+                                 self.revs_limit)
+        validate_rev_tree(rev_tree)
         return rev_tree, old_seq
 
     def read_sync(self, id, revs, include_path=False):
