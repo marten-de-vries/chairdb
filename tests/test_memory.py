@@ -225,3 +225,7 @@ async def test_async(db):
     assert len(errors) == 1 and isinstance(errors[0], NotFound)
 
     assert 'memory' in await db.id
+
+    assert await db.revs_limit == 1000
+    await db.set_revs_limit(500)
+    assert await db.revs_limit == 500

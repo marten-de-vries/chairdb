@@ -1,43 +1,23 @@
-# TODO: revs limit (+ update documentation)
-
 import bisect
-import collections
-import functools
 import typing
 
 
 class Leaf(typing.NamedTuple):
-    """A leaf node represents a last version of a document. Note that it's not
-    automatically the winner: it could be the junior member of a conflict.
+    """A Leaf node, consisting of a revision number, it's parent revision
+    hashes and a document (or None if deleted).
 
     """
-    rev_hash: str
-    doc_ptr: typing.Optional[dict]  # None if deleted
+    rev_num: int
+    path: list
+    doc_ptr: typing.Optional[dict]
+
+    def index(self, rev_num):
+        """Convert a revision number to a Leaf.path index"""
+
+        return self.rev_num - rev_num
 
 
-class Node(typing.NamedTuple):
-    """A past revision of one (or more) of the leafs of the document. For child
-    order, see RevisionTree.
-
-    """
-    rev_hash: str
-    children: list
-
-
-class Root(typing.NamedTuple):
-    """A start of a tree. There can be multiple starts if the initial revisions
-    are conflicted or through revision pruning.
-
-    For many purposes, a Root can be treated as the Leaf or Node object it
-    wraps due to the @property definitions in this class which function as a
-    proxy.
-
-    """
-    start_rev_num: int
-    tree: typing.Union[Node, Leaf]
-
-
-class RevisionTree(typing.NamedTuple):
+class RevisionTree(list):
     """A revision tree like:
 
     '3-a' -> '4-b'
@@ -48,15 +28,9 @@ class RevisionTree(typing.NamedTuple):
     can be represented using this class as:
 
     RevisionTree([
-        Root(1, Node("c", [
-            Leaf("d", {}),
-            Node("e", [
-                Leaf("f", {})
-            ]),
-        ])),
-        Root(3, Node("a", [
-            Leaf("b", {}),
-        ])),
+        Leaf(2, ['d', 'c'], {}),
+        Leaf(3, ['f', 'e', 'c'], {}),
+        Leaf(4, ['b', 'a'], {}),
     ])
 
     Note that the 'longest' branches (as they were before pruning) come last.
@@ -64,300 +38,136 @@ class RevisionTree(typing.NamedTuple):
     (from low -> high). This simplifies winner determination.
 
     """
-    children: list
+    def __init__(self, children):
+        super().__init__(children)
+
+        # used to keep sorted by leaf's revision number and hash
+        self._keys = [by_max_rev(leaf) for leaf in self]
 
     def merge_with_path(self, doc_rev_num, doc_path, doc, revs_limit=1000):
-        """Merges a document into the revision tree, storing 'doc' into a new
-        leaf node (assuming the location pointed at by 'rev_num' and 'path'
-        would in fact be a leaf node, which is not the case if a document has
-        already been replaced by a newer version). 'rev_num' is the revision
-        number of the document. 'path' is a list of revision hashes. The first
+        """Merges a document into the revision tree, storing 'doc' into a leaf
+        node (assuming the location pointed at by 'rev_num' and 'path' would in
+        fact be a leaf node, which is not the case if a document has already
+        been replaced by a newer version). 'doc_rev_num' is the revision number
+        of the document. 'doc_path' is a list of revision hashes. The first
         hash is the last (i.e. current) revision of the document, while the
         last one is its earliest known parent revision.
 
-        """
-        # make sure we don't cross the revs limit while constructing the 'new'
-        # branch of the tree
-        del doc_path[revs_limit:]
+        A maximum of 'revs_limit' old revisions are kept.
 
-        max_revs_stack = [[]]
-        walk = track_max_revs(self._walk(include_path=True), max_revs_stack)
-        for node, rev_num, path in walk:
-            i = (doc_rev_num - rev_num)
-            if 0 <= i < len(doc_path) and node.rev_hash == doc_path[i]:
-                # it is the insertion spot!
+        """
+        for i in range(len(self) - 1, -1, -1):
+            leaf = self[i]
+            # 1. check if already in tree. E.g.:
+            #
+            # leaf.rev_num = 5
+            # leaf.path = ['e', 'd', 'c']
+            #
+            # doc_rev_num = 3
+            # doc_path = ['c', 'b', 'a']
+            j = leaf.index(doc_rev_num)
+            if 0 <= j < len(leaf.path) and leaf.path[j] == doc_path[0]:
+                return  # it is. Done.
+
+            # 2. extend leaf if possible. E.g.:
+            #
+            # leaf.rev_num = 3
+            # leaf.path = ['c', 'b', 'a']
+            # doc_rev_num = 5
+            # doc_path = ['e', 'd', 'c', 'b']
+            k = doc_rev_num - leaf.rev_num
+            if 0 <= k < len(doc_path) and doc_path[k] == leaf.path[0]:
+                full_path = doc_path[:k] + leaf.path
+                del self[i]
+                del self._keys[i]
+                self._insert_leaf(doc_rev_num, full_path, doc, revs_limit)
+                return  # it is. Done.
+
+        # otherwise insert as a new leaf branch:
+        self._insert_as_new_branch(doc_rev_num, doc_path, doc, revs_limit)
+
+    def _insert_as_new_branch(self, doc_rev_num, doc_path, doc, revs_limit):
+        for leaf, leaf_rev_num in self.leafs():
+            # 3. try to find common history
+            start_leaf_rev_num = leaf_rev_num + 1 - len(leaf.path)
+            start_doc_rev_num = doc_rev_num + 1 - len(doc_path)
+            maybe_common_rev_num = max(start_leaf_rev_num, start_doc_rev_num)
+
+            leaf_i = leaf.index(maybe_common_rev_num)
+            doc_i = doc_rev_num - maybe_common_rev_num
+
+            common_rev = (
+                0 <= leaf_i < len(leaf.path) and
+                0 <= doc_i < len(doc_path) and
+                leaf.path[leaf_i] == doc_path[doc_i]
+            )
+            if common_rev:
+                # success, combine both halves into a 'full_path'
+                full_path = doc_path[:doc_i] + leaf.path[leaf_i:]
                 break
         else:
-            # merging impossible, insert the new doc directly into a new root
-            # instead
-            start_rev_num = doc_rev_num - len(doc_path) + 1
-            max_rev = doc_rev_num, doc_path[0]
+            # 4. a new branch without shared history
+            full_path = doc_path
 
-            tree = construct_tree(doc_path, doc)
-            root = Root(start_rev_num, tree)
+        self._insert_leaf(doc_rev_num, full_path, doc, revs_limit)
 
-            insert_child(self, max_revs_stack, max_rev, root)
-            return
+    def _insert_leaf(self, doc_rev_num, full_path, doc, revs_limit):
+        # stem using revs_limit
+        assert revs_limit > 0
+        del full_path[revs_limit:]
 
-        # merge:
-        if i > 0:
-            # item not already in the tree
-            #
-            # now, based on doc_path and rev_num (through i), we construct
-            # the 'new' part of the tree. This can consist of a single leaf
-            # node (all parent revisions already known), but also a full
-            # tree containing (almost) each rev in doc_path.
-            tree = construct_tree(doc_path[:i], doc)
-            max_rev = doc_rev_num, doc_path[0]
-            node, max_revs = insert_child(node, max_revs_stack, max_rev, tree)
+        # actual insertion using bisection
+        leaf = Leaf(doc_rev_num, full_path, doc)
+        key = by_max_rev(leaf)
+        i = bisect.bisect(self._keys, key)
+        self._keys.insert(i, key)
+        self.insert(i, leaf)
 
-            # now just maintain the invariant
-            bubble_upward(path, max_revs_stack, node, max_revs, revs_limit - i)
-
-    def find(self, revs, include_path):
+    def find(self, revs):
         """For each revision number in 'revs', find the leaf documents of the
         branches pointed to by said revisions.
 
         """
-        # first find all the nodes that match the requested revisions
-        for node, rev_num, path in preorder_only(self._walk(include_path)):
-            if (rev_num, node.rev_hash) in revs:
-                # find all leaf branches for this doc (latest=true)
-                yield from leafs_only(walk(node, rev_num, path))
+        for leaf, leaf_rev_num in self.leafs():
+            for rev_num, rev_hash in revs:
+                i = leaf.index(rev_num)
+                if 0 <= i < len(leaf.path) and leaf.path[i] == rev_hash:
+                    # return the max rev (latest=true)
+                    yield leaf, leaf_rev_num
+                    break  # check the next leaf
 
-    def _walk(self, include_path=False):
-        indexes = range(len(self.children))
-        for i, root in zip(reversed(indexes), reversed(self.children)):
-            path = collections.deque([[self, i]]) if include_path else None
-            yield from walk(root.tree, root.start_rev_num, path)
+    def leafs(self):
+        """All leafs in the tree. Those with the highest revision number and
+        hash first.
 
-    def leafs(self, include_path=False):
-        return leafs_only(self._walk(include_path))
+        """
+        for leaf in reversed(self):
+            yield leaf, leaf.rev_num
 
     def winner(self):
-        """Assumption: leafs are sorted already (longest branches & highest rev
-        hashes last, which means they are encountered *first* when using the
-        walk functions. They are defined that way.)
+        """Returns the winning leaf, i.e. the one with the highest rev that
+        isn't deleted. If no such leafs exist, a deleted one suffices too.
+
+        Assumption: leafs are sorted already. (Longest branches & highest
+        rev hashes last, which means they are encountered *first* when using
+        the 'self.leafs()' function. It's defined that way.)
 
         """
         deleted_winner = None
-        for i, (leaf, *info) in enumerate(self.leafs(include_path=True)):
+        for i, (leaf, rev_num) in enumerate(self.leafs()):
             if leaf.doc_ptr is not None:
-                return leaf, *info  # we have a non-deleted winner
+                return leaf, rev_num  # we have a non-deleted winner
             if i == 0:
-                deleted_winner = leaf, *info
+                deleted_winner = leaf, rev_num
         return deleted_winner  # no non-deleted ones exist
 
     def all_revs(self):
-        for node, rev_num, _ in preorder_only(self._walk()):
-            yield node, rev_num
+        """All revisions in the tree. Some can be yielded multiple times."""
+
+        for leaf, leaf_rev_num in self.leafs():
+            for i in range(len(leaf.path)):
+                yield leaf, leaf_rev_num - i
 
 
-def walk(start_node, rev_num, path):
-    base = with_rev_num(tree_walk(start_node), rev_num)
-    if path is None:
-        return with_dummy(base)  # just put 'None' in the place of 'path'
-    else:
-        return with_path(base, path)
-
-
-def tree_walk(start_node):
-    global stack
-    stack = [(start_node, True)]
-    while stack:
-        node, preorder = stack.pop()
-        yield node, preorder
-
-        if preorder:
-            # visit again after the children by pushing it to the stack first
-            stack.append((node, False))
-            for i, child_tree in enumerate(getattr(node, 'children', [])):
-                stack.append((child_tree, True))
-
-
-def with_rev_num(walk, rev_num):
-    """Start rev_num: Root.rev_num"""
-
-    for node, preorder, *extra in walk:
-        if not preorder:
-            rev_num -= 1
-        yield node, preorder, *extra, rev_num
-        if preorder:
-            rev_num += 1
-
-
-def leafs_only(walk):
-    for node, *extra in preorder_only(walk):
-        if isinstance(node, Leaf):
-            yield node, *extra
-
-
-def preorder_only(walk):
-    for node, preorder, *extra in walk:
-        if preorder:
-            yield node, *extra
-
-
-def track_max_revs(walk, max_revs_stack):
-    """Similar to other methods, but max_revs_stack is explicitly modified in
-    place instead of yielded. The reason is that it's value is also meaningful
-    *before* any iteration has occurred, and *after* iteration has finished.
-    Yielding would be confusing. Requires rev_num as first 'walk wrapper'.
-
-    start max_revs_stack, e.g.: [[]]
-
-    """
-    for node, preorder, rev_num, *extra in walk:
-        if preorder:
-            max_revs_stack.append([])
-            if isinstance(node, Leaf):
-                max_revs_stack[-1].append((rev_num, node.rev_hash))
-        if not preorder:
-            # only yield during postorder: the max_revs_stack is meaningless
-            # during preorder.
-            yield node, rev_num, *extra
-
-            current_max_rev = max_revs_stack.pop()[0]
-            max_revs_stack[-1].append(current_max_rev)
-
-
-def with_dummy(walk):
-    for row in walk:
-        yield *row, None
-
-
-def with_path(walk, path):
-    """path should be a collections.deque
-
-    start path: [[tree, 0]]
-
-    """
-    for node, preorder, *extra in walk:
-        if not (isinstance(node, Leaf) or preorder):
-            del path[0]
-
-        yield node, preorder, *extra, path
-        if not isinstance(node, Leaf) and preorder:
-            path.appendleft([node, len(node.children) - 1])
-
-        if not preorder:
-            # increase child index (we're in a parent node again)
-            path[0][1] -= 1
-
-
-def construct_tree(rev_hashes, doc):
-    """Construct a linear tree (with always only a single child node)"""
-
-    tree = Leaf(rev_hashes[0], doc)
-    for rev_hash in rev_hashes[1:]:
-        tree = Node(rev_hash, [tree])
-    return tree
-
-
-def insert_child(node, max_revs_stack, max_rev, new_child):
-    """Returns a node with the child inserted and the updated max_revs"""
-
-    max_revs = max_revs_stack.pop()
-    max_revs.reverse()
-
-    if isinstance(node, Leaf):
-        # this essentially handles auto-compaction
-        return Node(node.rev_hash, [new_child]), [max_rev]
-    else:
-        # a Node or RevisionTree
-        #
-        # 'max_revs' might be shorter than 'children' because we don't care
-        # about revisions that were (before insertion) already less than
-        # the branch currently being updated.
-        i = bisect.bisect_left(max_revs, max_rev)
-        # ... but that means index need to be calculated from the end:
-        child_i = i - len(max_revs) + len(node.children)
-
-        max_revs.insert(i, max_rev)
-        node.children.insert(child_i, new_child)
-        return node, max_revs
-
-
-def bubble_upward(path, max_revs_stack, node, max_revs, stem_count):
-    """When 'stem_count == 0', revs_limit is reached. Because of that, the tree
-    is stemmed then. The resulting branch is inserted again at the end.
-
-    """
-    stemmed = None
-
-    for parent_node, i in path:
-        old_child = parent_node.children.pop(i)
-
-        stem_count -= 1
-        if stem_count == 0 or not node.children:
-            if stem_count == 0:
-                stemmed = node, max_revs[0]
-            node = parent_node
-            max_revs = max_revs_stack.pop()
-            max_revs.reverse()
-        else:
-            if isinstance(old_child, Root):
-                # re-wrap
-                node = Root(old_child.start_rev_num, node)
-            node, max_revs = insert_child(parent_node, max_revs_stack,
-                                          max_revs[-1], node)
-    if stemmed:
-        root = Root(- stem_count + 1, stemmed[0])
-
-        max_revs.reverse()
-        insert_child(parent_node, [max_revs], stemmed[1], root)
-
-
-# validation stuff:
-
-
-def validate_rev_tree(tree):
-    for root in tree.children:
-        assert isinstance(root, Root)
-        assert root.start_rev_num > 0
-        validate_node(root.start_rev_num, root.tree)
-
-
-def validate_node(rev_num, node):
-    assert isinstance(node.rev_hash, str)
-    if isinstance(node, Node):
-        assert node.children
-        by_max_rev = functools.partial(by_last_rev_recur, rev_num)
-        assert sorted(node.children, key=by_max_rev) == node.children
-
-        for subnode in node.children:
-            validate_node(rev_num + 1, subnode)
-    else:
-        assert isinstance(node, Leaf)
-        assert node.doc_ptr is None or isinstance(node.doc_ptr, dict)
-
-
-def by_last_rev_recur(rev_num, node):
-    if isinstance(node, Leaf):
-        return rev_num, node.rev_hash
-    return by_last_rev_recur(rev_num + 1, node.children[-1])
-
-
-# debugging stuff:
-
-def as_tree_node(node, rev_num):
-    if isinstance(node, Leaf):
-        yield f'{rev_num}-{node.rev_hash}: {node.doc_ptr}'
-    else:
-        this = f'{rev_num}-{node.rev_hash} '
-        first = True
-        for child in node.children:
-            for line in as_tree_node(child, rev_num + 1):
-                if first:
-                    first = False
-                    yield this + line
-                else:
-                    yield len(this) * ' ' + line
-
-
-def as_tree_root(root):
-    return '\n'.join(as_tree_node(root.tree, root.start_rev_num))
-
-
-def as_tree(rev_tree):
-    return '\n\n'.join(as_tree_root(root) for root in rev_tree.children)
+def by_max_rev(leaf):
+    return leaf.rev_num, leaf.path[0]

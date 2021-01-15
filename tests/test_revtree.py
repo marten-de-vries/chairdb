@@ -1,81 +1,36 @@
-from microcouch.revtree import (RevisionTree, Root, Node, Leaf, preorder_only,
-                                track_max_revs, validate_rev_tree, as_tree)
+from microcouch.revtree import (RevisionTree, Leaf, by_max_rev)
 
 
-#        a
-#   b         c
-# d   e     f   g
-#
-TREE = RevisionTree([
-    Root(1, Node('a', [
-        Node('b', [
-            Leaf('d', {}),
-            Leaf('e', {}),
-        ]),
-        Node('c', [
-            Leaf('f', {}),
-            Leaf('g', {}),
-        ]),
-    ])),
-])
+def validate_rev_tree(tree):
+    for leaf in tree:
+        assert isinstance(leaf, Leaf)
+        assert isinstance(leaf.rev_num, int)
+        assert leaf.rev_num > 0
+        assert isinstance(leaf.path, list)
+        assert all(isinstance(a, str) for a in leaf.path)
+        assert leaf.doc_ptr is None or isinstance(leaf.doc_ptr, dict)
+    assert sorted(tree, key=by_max_rev) == tree
 
 
-def test_debug():
-    assert as_tree(TREE) == """1-a 2-b 3-d: {}
-        3-e: {}
-    2-c 3-f: {}
-        3-g: {}"""
-
-
-def test_walk():
-    walk1 = [(rev_num, node.rev_hash)
-             for node, rev_num, _ in preorder_only(TREE._walk())]
-    assert walk1 == [
-        (1, 'a'),
-        (2, 'c'),
+def test_new_branch():
+    #        a
+    #   b         c
+    # d   e     f   g
+    #
+    tree = RevisionTree([
+        Leaf(3, ['d', 'b', 'a'], {}),
+        Leaf(3, ['e', 'b', 'a'], {}),
+        Leaf(3, ['f', 'c', 'a'], {}),
+        Leaf(3, ['g', 'c', 'a'], {}),
+    ])
+    assert [(num, leaf.path[0]) for leaf, num in tree.leafs()] == [
         (3, 'g'),
         (3, 'f'),
-        (2, 'b'),
         (3, 'e'),
         (3, 'd'),
     ]
-
-    walk2 = [(rev_num, node.rev_hash, preorder)
-             for node, preorder, rev_num, _ in TREE._walk()]
-    assert walk2 == [
-        (1, 'a', True),
-        (2, 'c', True),
-        (3, 'g', True),
-        (3, 'g', False),
-        (3, 'f', True),
-        (3, 'f', False),
-        (2, 'c', False),
-        (2, 'b', True),
-        (3, 'e', True),
-        (3, 'e', False),
-        (3, 'd', True),
-        (3, 'd', False),
-        (2, 'b', False),
-        (1, 'a', False),
-    ]
-
-    max_revs_stack = [[]]
-    walk3 = track_max_revs(TREE._walk(), max_revs_stack)
-    assert max_revs_stack == [[]]
-    # copy on each iteration, because max_revs_stack is modified in-place
-    walk3resp = [(rev_num, node.rev_hash, [s[:] for s in max_revs_stack])
-                 for node, rev_num, _ in walk3]
-    assert walk3resp == [
-        (3, 'g', [[], [], [], [(3, 'g')]]),
-        (3, 'f', [[], [], [(3, 'g')], [(3, 'f')]]),
-        (2, 'c', [[], [], [(3, 'g'), (3, 'f')]]),
-        (3, 'e', [[], [(3, 'g')], [], [(3, 'e')]]),
-        (3, 'd', [[], [(3, 'g')], [(3, 'e')], [(3, 'd')]]),
-        (2, 'b', [[], [(3, 'g')], [(3, 'e'), (3, 'd')]]),
-        (1, 'a', [[], [(3, 'g'), (3, 'e')]])
-    ]
-    # check at the end
-    assert max_revs_stack == [[(3, 'g')]]
+    tree.merge_with_path(doc_rev_num=3, doc_path=['h', 'c'], doc={})
+    assert next(tree.leafs()) == (Leaf(3, ['h', 'c', 'a'], {}), 3)
 
 
 def test_order():
@@ -85,24 +40,24 @@ def test_order():
     validate_rev_tree(tree)
 
     assert list(tree.leafs()) == [
-        (Leaf('b', {'x': 1}), 1, None),
+        (Leaf(1, ['b'], {'x': 1}), 1),
     ]
 
     tree.merge_with_path(doc_rev_num=1, doc_path=['a'], doc={'x': 2})
     validate_rev_tree(tree)
 
     assert list(tree.leafs()) == [
-        (Leaf('b', {'x': 1}), 1, None),
-        (Leaf('a', {'x': 2}), 1, None),
+        (Leaf(1, ['b'], {'x': 1}), 1),
+        (Leaf(1, ['a'], {'x': 2}), 1),
     ]
 
     tree.merge_with_path(doc_rev_num=1, doc_path=['c'], doc={'x': 3})
     validate_rev_tree(tree)
 
     assert list(tree.leafs()) == [
-        (Leaf('c', {'x': 3}), 1, None),
-        (Leaf('b', {'x': 1}), 1, None),
-        (Leaf('a', {'x': 2}), 1, None),
+        (Leaf(1, ['c'], {'x': 3}), 1),
+        (Leaf(1, ['b'], {'x': 1}), 1),
+        (Leaf(1, ['a'], {'x': 2}), 1),
     ]
 
 
@@ -110,14 +65,8 @@ def test_new_winner():
     # 1-a 2-b 3-c
     #         3-x 4-y
     tree = RevisionTree([
-        Root(1, Node('a', [
-            Node('b', [
-                Leaf('c', {'name': 'c'}),
-                Node('x', [
-                    Leaf('y', {'name': 'y'}),
-                ]),
-            ]),
-        ]))
+        Leaf(3, ['c', 'b', 'a'], {'name': 'c'}),
+        Leaf(4, ['y', 'x', 'b', 'a'], {'name': 'y'}),
     ])
     validate_rev_tree(tree)
 
@@ -126,18 +75,8 @@ def test_new_winner():
                          doc={'name': 'n'})
 
     target = RevisionTree([
-        Root(1, Node('a', [
-            Node('b', [
-                Node('x', [
-                    Leaf('y', {'name': 'y'}),
-                ]),
-                Node('c', [
-                    Node('m', [
-                        Leaf('n', {'name': 'n'})
-                    ])
-                ]),
-            ]),
-        ]))
+        Leaf(4, ['y', 'x', 'b', 'a'], {'name': 'y'}),
+        Leaf(5, ['n', 'm', 'c', 'b', 'a'], {'name': 'n'}),
     ])
 
     validate_rev_tree(tree)
@@ -152,7 +91,7 @@ def test_revs_limit_basic():
     validate_rev_tree(tree)
 
     assert tree == RevisionTree([
-        Root(2, Leaf('b', {}))
+        Leaf(2, ['b'], {}),
     ])
 
 
@@ -160,14 +99,8 @@ def test_revs_limit_advanced():
     # 1-a 2-b 3-c
     #     2-f 3-g
     tree = RevisionTree([
-        Root(1, Node('a', [
-            Node('b', [
-                Leaf('c', {})
-            ]),
-            Node('f', [
-                Leaf('g', {})
-            ])
-        ])),
+        Leaf(3, ['c', 'b', 'a'], {}),
+        Leaf(3, ['g', 'f', 'a'], {}),
     ])
     validate_rev_tree(tree)
 
@@ -179,32 +112,19 @@ def test_revs_limit_advanced():
     validate_rev_tree(tree)
 
     assert tree == RevisionTree([
-        Root(1, Node('a', [
-            Node('f', [
-                Leaf('g', {}),
-            ])
-        ])),
-        Root(2, Node('b', [
-            Node('c', [
-                Leaf('d', {})
-            ])
-        ]))
+        Leaf(3, ['g', 'f', 'a'], {}),
+        Leaf(4, ['d', 'c', 'b'], {}),
     ])
 
 
-def skip_test_revs_limit_advanced2():
+def test_revs_limit_advanced2():
     # 1-a 2-e
-    #     2-f
     #     2-b 3-c
     # 4-d is added
 
     tree = RevisionTree([
-        Root(1, Node('a', [
-            Leaf('e', {}),
-            Node('b', [
-                Leaf('c', {}),
-            ]),
-        ])),
+        Leaf(2, ['e', 'a'], {}),
+        Leaf(3, ['c', 'b', 'a'], {}),
     ])
     validate_rev_tree(tree)
     tree.merge_with_path(doc_rev_num=4, doc_path=['d', 'c', 'b', 'a'], doc={},
@@ -212,15 +132,10 @@ def skip_test_revs_limit_advanced2():
     validate_rev_tree(tree)
 
     # 1-a 2-e
-    #     2-f
     # 3-c 4-d
     #
     # Note how 2b vanishes!
     assert tree == RevisionTree([
-        Root(1, Node('a', [
-            Leaf('e', {}),
-        ])),
-        Root(3, Node('c', [
-            Leaf('d', {}),
-        ])),
+        Leaf(2, ['e', 'a'], {}),
+        Leaf(4, ['d', 'c'], {}),
     ])

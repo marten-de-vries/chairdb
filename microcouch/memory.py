@@ -1,11 +1,10 @@
 import sortedcontainers
 
 import asyncio
-import contextlib
 import typing
 import uuid
 
-from .revtree import Leaf, RevisionTree, validate_rev_tree
+from .revtree import Leaf, RevisionTree
 from .datatypes import NotFound, Change
 
 
@@ -13,8 +12,7 @@ class DocumentInfo(typing.NamedTuple):
     """An internal representation used as value in the 'by id' index."""
 
     winning_leaf: Leaf
-    winning_rev_num: int
-    winning_path: list
+    winning_leaf_rev_num: int
     rev_tree: RevisionTree
     last_update_seq: int
 
@@ -22,10 +20,10 @@ class DocumentInfo(typing.NamedTuple):
 class SyncInMemoryDatabase:
     """For documentation, see the InMemoryDatabase class."""
 
-    def __init__(self, id=None, revs_limit=1000):
+    def __init__(self, id=None):
         self.id_sync = (id or uuid.uuid4().hex) + 'memory'
         self.update_seq_sync = 0
-        self.revs_limit = revs_limit
+        self.revs_limit_sync = 1000
 
         # id -> document (dict)
         self._local = sortedcontainers.SortedDict()
@@ -45,7 +43,7 @@ class SyncInMemoryDatabase:
             doc_info = self._byid[id]
             deleted = doc_info.winning_leaf.doc_ptr is None
             leaf_revs = [self._rev(leaf, rev_num)
-                         for leaf, rev_num, _ in doc_info.rev_tree.leafs()]
+                         for leaf, rev_num in doc_info.rev_tree.leafs()]
             yield Change(id, seq, deleted, leaf_revs)
 
     def revs_diff_sync(self, id, revs):
@@ -101,13 +99,12 @@ class SyncInMemoryDatabase:
     def _update_rev_tree(self, id, revs, doc):
         try:
             # load existing tree
-            _, _, _, rev_tree, old_seq = self._byid[id]
+            _, _, rev_tree, old_seq = self._byid[id]
         except KeyError:
             rev_tree, old_seq = RevisionTree([]), None  # new empty tree
 
         rev_tree.merge_with_path(revs['start'], revs['ids'], doc,
-                                 self.revs_limit)
-        validate_rev_tree(rev_tree)
+                                 self.revs_limit_sync)
         return rev_tree, old_seq
 
     def read_sync(self, id, revs, include_path=False):
@@ -135,8 +132,8 @@ class SyncInMemoryDatabase:
 
         if revs == 'winner':
             # the information is stored in the DocumentInfo directly
-            yield self._to_doc(id, info.winning_leaf, info.winning_rev_num,
-                               info.winning_path if include_path else None)
+            leaf = info.winning_leaf
+            yield self._to_doc(id, leaf, leaf.rev_num, include_path)
         else:
             # ... walk the revision tree
             yield from self._read_revs(id, revs, info.rev_tree, include_path)
@@ -144,15 +141,15 @@ class SyncInMemoryDatabase:
     def _read_revs(self, id, revs, rev_tree, include_path):
         if revs == 'all':
             # all leafs
-            for leaf, rev_num, path in rev_tree.leafs(include_path):
-                yield self._to_doc(id, leaf, rev_num, path)
+            for leaf, rev_num in rev_tree.leafs():
+                yield self._to_doc(id, leaf, rev_num, include_path)
         else:
             revs = {self._parse_rev(rev) for rev in revs}
             # search for specific revisions
-            for leaf, rev_num, path in rev_tree.find(revs, include_path):
-                yield self._to_doc(id, leaf, rev_num, path)
+            for leaf, rev_num in rev_tree.find(revs):
+                yield self._to_doc(id, leaf, rev_num, include_path)
 
-    def _to_doc(self, id, leaf, rev_num, path=None):
+    def _to_doc(self, id, leaf, rev_num, include_path):
         """Reconstruct a CouchDB-compatible JSON document from the gathered
         information
 
@@ -162,17 +159,14 @@ class SyncInMemoryDatabase:
             doc['_deleted'] = True
         else:
             doc.update(leaf.doc_ptr)
-        if path is not None:
-            ids = [leaf.rev_hash]
-            for node, i in path:
-                with contextlib.suppress(AttributeError):
-                    ids.append(node.rev_hash)
+        if include_path:
+            ids = leaf.path[leaf.index(rev_num):]
             doc['_revisions'] = {'start': rev_num, 'ids': ids}
         return doc
 
     # rev helpers
-    def _rev(self, node, rev_num):
-        return f'{rev_num}-{node.rev_hash}'
+    def _rev(self, leaf, rev_num):
+        return f'{rev_num}-{leaf.path[leaf.index(rev_num)]}'
 
     def _parse_rev(self, rev):
         num, hash = rev.split('-')
@@ -187,8 +181,8 @@ class InMemoryDatabase(SyncInMemoryDatabase):
     the database continously. This means you cannot use revisions as a history
     mechanism, though. (Which isn't recommended anyway.)
 
-    Attachments, views, revision limits and purging are not implemented, but
-    everything essential for replication is there.
+    Attachments, views and purging are not implemented, but everything
+    essential for replication is there.
 
     Note that writing acts similar to _bulk_docs with new_edits=false. So you
     need to manually generate new revisions (and check for conflicts, I guess).
@@ -214,8 +208,8 @@ class InMemoryDatabase(SyncInMemoryDatabase):
     @property
     def id(self):
         """For identification of this specific database during replication. For
-        a (volatile) in-memory database, a random uuid is actually quite a
-        reasonable choice.
+        a (volatile) in-memory database, a random uuid (i.e. the default) is
+        actually quite a reasonable choice.
 
         """
         return self._as_future_result(self.id_sync)
@@ -291,3 +285,10 @@ class InMemoryDatabase(SyncInMemoryDatabase):
 
     async def ensure_full_commit(self):
         pass  # no-op for an in-memory db
+
+    @property
+    def revs_limit(self):
+        return self._as_future_result(self.revs_limit_sync)
+
+    async def set_revs_limit(self, value):
+        self.revs_limit_sync = value
