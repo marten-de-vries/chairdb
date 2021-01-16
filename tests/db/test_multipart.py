@@ -1,6 +1,6 @@
 import pytest
 
-from microcouch.multipart import MultipartParser
+from microcouch.db.multipart import MultipartParser
 
 TEST = b'--a\r\nContent-Type: application/json\r\n\r\n{}\r\n--a--'
 

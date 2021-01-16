@@ -15,7 +15,7 @@ import uuid
 
 from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
                      parse_json_stream)
-from ..datatypes import NotFound
+from ..db.datatypes import NotFound
 from .utils import JSONResp, parse_query_arg
 
 FULL_COMMIT = {

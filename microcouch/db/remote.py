@@ -5,8 +5,8 @@ import httpx
 import json
 
 from .datatypes import Unauthorized, Forbidden, NotFound, Change
-from .utils import as_json, parse_json_stream, aenumerate
 from .multipart import MultipartResponseParser
+from ..utils import as_json, parse_json_stream, aenumerate
 
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}

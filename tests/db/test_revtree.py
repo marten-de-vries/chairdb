@@ -1,4 +1,4 @@
-from microcouch.revtree import (RevisionTree, Leaf, by_max_rev)
+from microcouch.db.revtree import RevisionTree, Leaf
 
 
 def validate_rev_tree(tree):
@@ -9,7 +9,7 @@ def validate_rev_tree(tree):
         assert isinstance(leaf.path, list)
         assert all(isinstance(a, str) for a in leaf.path)
         assert leaf.doc_ptr is None or isinstance(leaf.doc_ptr, dict)
-    assert sorted(tree, key=by_max_rev) == tree
+    assert sorted(tree, key=tree._by_max_rev) == tree
 
 
 def test_new_branch():

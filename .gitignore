@@ -3,3 +3,4 @@ venv
 htmlcov
 integrationtest/data
 __pycache__
+test.sqlite3

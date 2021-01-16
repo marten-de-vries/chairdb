@@ -42,7 +42,10 @@ class RevisionTree(list):
         super().__init__(children)
 
         # used to keep sorted by leaf's revision number and hash
-        self._keys = [by_max_rev(leaf) for leaf in self]
+        self._keys = [self._by_max_rev(leaf) for leaf in self]
+
+    def _by_max_rev(self, leaf):
+        return leaf.rev_num, leaf.path[0]
 
     def merge_with_path(self, doc_rev_num, doc_path, doc, revs_limit=1000):
         """Merges a document into the revision tree, storing 'doc' into a leaf
@@ -118,7 +121,7 @@ class RevisionTree(list):
 
         # actual insertion using bisection
         leaf = Leaf(doc_rev_num, full_path, doc)
-        key = by_max_rev(leaf)
+        key = self._by_max_rev(leaf)
         i = bisect.bisect(self._keys, key)
         self._keys.insert(i, key)
         self.insert(i, leaf)
@@ -144,22 +147,19 @@ class RevisionTree(list):
         for leaf in reversed(self):
             yield leaf, leaf.rev_num
 
-    def winner(self):
-        """Returns the winning leaf, i.e. the one with the highest rev that
-        isn't deleted. If no such leafs exist, a deleted one suffices too.
+    def winner_idx(self):
+        """Returns the index of the winning leaf, i.e. the one with the highest
+        rev that isn't deleted. If no such leafs exist, a deleted one suffices
+        too.
 
-        Assumption: leafs are sorted already. (Longest branches & highest
-        rev hashes last, which means they are encountered *first* when using
-        the 'self.leafs()' function. It's defined that way.)
+        Assumption: leafs are sorted already. (Longest branches & highest rev
+        hashes last)
 
         """
-        deleted_winner = None
-        for i, (leaf, rev_num) in enumerate(self.leafs()):
-            if leaf.doc_ptr is not None:
-                return leaf, rev_num  # we have a non-deleted winner
-            if i == 0:
-                deleted_winner = leaf, rev_num
-        return deleted_winner  # no non-deleted ones exist
+        for i in range(len(self) - 1, -1, -1):
+            if self[i].doc_ptr is not None:
+                return i  # we have a non-deleted winner
+        return len(self) - 1  # no non-deleted ones exist
 
     def all_revs(self):
         """All revisions in the tree. Some can be yielded multiple times."""
@@ -167,7 +167,3 @@ class RevisionTree(list):
         for leaf, leaf_rev_num in self.leafs():
             for i in range(len(leaf.path)):
                 yield leaf, leaf_rev_num - i
-
-
-def by_max_rev(leaf):
-    return leaf.rev_num, leaf.path[0]

@@ -2,7 +2,7 @@ import email.utils
 import hashlib
 import uuid
 
-from .datatypes import NotFound
+from .db.datatypes import NotFound
 from .utils import async_iter, to_list
 
 REPLICATION_ID_VERSION = 1

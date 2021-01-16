@@ -1,8 +1,14 @@
-from .memory import InMemoryDatabase
-from .remote import HTTPDatabase
 from .replicate import replicate
-from .datatypes import (MicroCouchError, Unauthorized, Forbidden, NotFound,
-                        Change)
 
-__all__ = ('InMemoryDatabase', 'HTTPDatabase', 'Change', 'MicroCouchError',
-           'Unauthorized', 'Forbidden', 'NotFound', 'replicate')
+from .db.memory import InMemoryDatabase
+from .db.remote import HTTPDatabase
+from .db.sql import SQLDatabase
+from .db.datatypes import (Change, MicroCouchError, Unauthorized, Forbidden,
+                           NotFound)
+
+from .server import app
+from .server.db import build_db_app
+
+__all__ = ('InMemoryDatabase', 'HTTPDatabase', 'SQLDatabase', 'Change',
+           'MicroCouchError', 'Unauthorized', 'Forbidden', 'NotFound',
+           'replicate', 'app', 'build_db_app')

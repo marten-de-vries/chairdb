@@ -2,14 +2,23 @@ import pytest
 
 import asyncio
 import contextlib
+import databases
 import pprint
 
-from microcouch import HTTPDatabase, InMemoryDatabase, replicate, NotFound
-from microcouch.server import app
+from microcouch import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
+                        NotFound, app)
 
 
 @pytest.mark.asyncio
-async def test_replicate():
+@pytest.fixture
+async def sql_target():
+    async with databases.Database('sqlite:///test.sqlite3') as db:
+        async with SQLDatabase(db) as target2:
+            yield target2
+
+
+@pytest.mark.asyncio
+async def test_replicate(sql_target):
     # guarantee stable replication id
     target = InMemoryDatabase(id='test')
     async with HTTPDatabase('http://localhost:5984/brassbandwirdum',
@@ -23,12 +32,16 @@ async def test_replicate():
                             credentials=('marten', 'test')) as source2:
         await replicate(source2, target)
 
-    target2 = InMemoryDatabase(id='test2')
-    async with HTTPDatabase('http://test/test', app=app) as local_server:
-        result = await replicate(target, local_server, create_target=True)
-        assert result['ok']
-        result2 = await replicate(local_server, target2)
-        assert result2['ok']
+        async with HTTPDatabase('http://test/test', app=app) as local_server:
+            result = await replicate(target, local_server, create_target=True)
+            assert result['ok']
+            result2 = await replicate(local_server, sql_target)
+            assert result2['ok']
+            result3 = await replicate(local_server, sql_target)
+            assert result3['ok']
+        target2 = InMemoryDatabase(id='another-test')
+        result4 = await replicate(sql_target, target2)
+        assert result4['ok']
 
 
 @pytest.mark.asyncio
