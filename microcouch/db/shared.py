@@ -4,15 +4,15 @@ from .revtree import RevisionTree
 from .datatypes import Change
 
 
-def build_change(id, seq, rev_tree, winning_leaf_idx):
-    winning_leaf = rev_tree[winning_leaf_idx]
-    deleted = winning_leaf.doc_ptr is None
-    leaf_revs = [rev(*leaf) for leaf in rev_tree.leafs()]
+def build_change(id, seq, rev_tree, winning_branch_idx):
+    winning_branch = rev_tree[winning_branch_idx]
+    deleted = winning_branch.leaf_doc_ptr is None
+    leaf_revs = [rev(b, b.leaf_rev_num) for b in rev_tree.branches()]
     return Change(id, seq, deleted, leaf_revs)
 
 
-def rev(leaf, rev_num):
-    return f'{rev_num}-{leaf.path[leaf.index(rev_num)]}'
+def rev(branch, rev_num):
+    return f'{rev_num}-{branch.path[branch.index(rev_num)]}'
 
 
 def parse_rev(rev):
@@ -47,11 +47,11 @@ def is_local(id):
     return id.startswith('_local')
 
 
-def read_docs(id, revs, include_path, rev_tree, winning_leaf_idx):
+def read_docs(id, revs, include_path, rev_tree, winning_branch_idx):
     if revs == 'winner':
         # the information is stored in the DocumentInfo directly
-        leaf = rev_tree[winning_leaf_idx]
-        yield to_doc(id, leaf, leaf.rev_num, include_path)
+        branch = rev_tree[winning_branch_idx]
+        yield to_doc(id, branch, include_path)
     else:
         # ... walk the revision tree
         yield from read_revs(id, revs, rev_tree, include_path)
@@ -60,28 +60,27 @@ def read_docs(id, revs, include_path, rev_tree, winning_leaf_idx):
 def read_revs(id, revs, rev_tree, include_path):
     if revs == 'all':
         # all leafs
-        for leaf, rev_num in rev_tree.leafs():
-            yield to_doc(id, leaf, rev_num, include_path)
+        for branch in rev_tree.branches():
+            yield to_doc(id, branch, include_path)
     else:
         revs = {parse_rev(rev) for rev in revs}
         # search for specific revisions
-        for leaf, rev_num in rev_tree.find(revs):
-            yield to_doc(id, leaf, rev_num, include_path)
+        for branch in rev_tree.find(revs):
+            yield to_doc(id, branch, include_path)
 
 
-def to_doc(id, leaf, rev_num, include_path):
+def to_doc(id, branch, include_path):
     """Reconstruct a CouchDB-compatible JSON document from the gathered
     information
 
     """
-    doc = {'_id': id, '_rev': rev(leaf, rev_num)}
-    if leaf.doc_ptr is None:
+    doc = {'_id': id, '_rev': rev(branch, branch.leaf_rev_num)}
+    if branch.leaf_doc_ptr is None:
         doc['_deleted'] = True
     else:
-        doc.update(leaf.doc_ptr)
+        doc.update(branch.leaf_doc_ptr)
     if include_path:
-        ids = leaf.path[leaf.index(rev_num):]
-        doc['_revisions'] = {'start': rev_num, 'ids': ids}
+        doc['_revisions'] = {'start': branch.leaf_rev_num, 'ids': branch.path}
     return doc
 
 

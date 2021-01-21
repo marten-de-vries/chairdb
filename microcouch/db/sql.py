@@ -4,7 +4,7 @@ import json
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
                      build_change, prepare_doc_write, update_doc, is_local,
                      to_local_doc, read_docs)
-from .revtree import RevisionTree, Leaf
+from .revtree import RevisionTree, Branch
 from .datatypes import NotFound
 from ..utils import as_json
 
@@ -13,7 +13,7 @@ TABLE_CREATE = [
         seq INTEGER PRIMARY KEY,
         id STRING,
         rev_tree JSON,
-        winning_leaf_idx INTEGER
+        winning_branch_idx INTEGER
     )""",
     "CREATE UNIQUE INDEX idx_id ON documents (id)",
     """CREATE TABLE local_documents (
@@ -24,7 +24,7 @@ TABLE_CREATE = [
 
 UPDATE_SEQ = "SELECT max(seq) AS update_seq from documents"
 
-CHANGES = """SELECT seq, id, rev_tree, winning_leaf_idx FROM documents
+CHANGES = """SELECT seq, id, rev_tree, winning_branch_idx FROM documents
 WHERE seq > :since
 ORDER BY seq"""
 
@@ -37,7 +37,7 @@ VALUES (NULL, :id, :rev_tree, :winner)"""
 
 READ_LOCAL = "SELECT document FROM local_documents WHERE id=:id"
 
-READ = "SELECT rev_tree, winning_leaf_idx FROM documents WHERE id=:id"
+READ = "SELECT rev_tree, winning_branch_idx FROM documents WHERE id=:id"
 
 
 # TODO: serialize/deserialize json + error handling
@@ -69,9 +69,9 @@ class SQLDatabase(ContinuousChangesMixin):
     async def _changes(self, since=None):
         rows = await self._db.fetch_all(query=CHANGES,
                                         values={'since': since or 0})
-        for seq, id, tree, winning_leaf_idx in rows:
+        for seq, id, tree, winning_branch_idx in rows:
             rev_tree = self._decode_tree(tree)
-            yield build_change(id, seq, rev_tree, winning_leaf_idx)
+            yield build_change(id, seq, rev_tree, winning_branch_idx)
 
     async def revs_diff(self, remote):
         async for id, revs in remote:
@@ -83,15 +83,16 @@ class SQLDatabase(ContinuousChangesMixin):
             return self._decode_tree(tree[0])
 
     def _decode_tree(self, data):
-        return RevisionTree([Leaf(*leaf) for leaf in json.loads(data)])
+        return RevisionTree([Branch(*branch) for branch in json.loads(data)])
 
     async def write(self, docs):
-        if False:
-            yield None  # make into generator so future errors can be passed on
         async for doc in docs:
             id, revs, doc = prepare_doc_write(doc)
             if revs:
-                await self._write_doc(id, revs, doc)
+                try:
+                    await self._write_doc(id, revs, doc)
+                except Exception as exc:
+                    yield exc
             else:
                 values = {'id': id, 'document': as_json(doc)}
                 await self._db.execute(WRITE_LOCAL, values)
@@ -102,6 +103,8 @@ class SQLDatabase(ContinuousChangesMixin):
         new_tree, winner = update_doc(id, revs, doc, tree, revs_limit=1000)
         values = {'id': id, 'rev_tree': as_json(new_tree), 'winner': winner}
         await self._db.execute(WRITE, values)
+        self._update_event.set()
+        self._update_event.clear()
 
     async def read(self, requested, include_path=False):
         async for id, revs in requested:

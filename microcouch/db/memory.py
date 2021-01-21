@@ -15,7 +15,7 @@ class DocumentInfo(typing.NamedTuple):
     """An internal representation used as value in the 'by id' index."""
 
     rev_tree: RevisionTree
-    winning_leaf_idx: int
+    winning_branch_idx: int
     last_update_seq: int
 
 
@@ -127,7 +127,7 @@ class InMemoryDatabase(SyncInMemoryDatabase, ContinuousChangesMixin):
         super()._write_normal(*args, **kwargs)
 
         self._update_event.set()
-        self._update_event = asyncio.Event()
+        self._update_event.clear()
 
     @property
     def id(self):
@@ -162,7 +162,7 @@ class InMemoryDatabase(SyncInMemoryDatabase, ContinuousChangesMixin):
         async for doc in docs:
             try:
                 self.write_sync(doc)
-            except (AssertionError, KeyError) as exc:
+            except Exception as exc:
                 yield exc
 
     async def read(self, requested, include_path=False):

@@ -114,6 +114,7 @@ def all_docs(request):
 
 
 def all_docs_stream(db):
+    # TODO: FIXME
     yield '{"offset":0,"rows":['
     total = 0
     for key, doc_info in db._byid.items():
