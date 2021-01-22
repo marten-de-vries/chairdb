@@ -4,6 +4,7 @@ httpx
 ijson
 databases
 aiosqlite
+uvicorn
 flake8
 pytest
 pytest-asyncio

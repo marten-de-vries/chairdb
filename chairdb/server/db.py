@@ -16,6 +16,7 @@ import uuid
 from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
                      parse_json_stream)
 from ..db.datatypes import NotFound
+from ..db.shared import rev
 from .utils import JSONResp, parse_query_arg
 
 FULL_COMMIT = {
@@ -118,12 +119,12 @@ def all_docs_stream(db):
     yield '{"offset":0,"rows":['
     total = 0
     for key, doc_info in db._byid.items():
-        leaf = doc_info.winning_leaf
-        if leaf.doc_ptr:
+        branch = doc_info.rev_tree[doc_info.winning_branch_idx]
+        if branch.leaf_doc_ptr:
             if total != 0:
                 yield ','
-            rev = f'{doc_info.winning_rev_num}-{leaf.rev_hash}'
-            yield as_json({'id': key, 'key': key, 'value': {'rev': rev}})
+            r = rev(branch, branch.leaf_rev_num)
+            yield as_json({'id': key, 'key': key, 'value': {'rev': r}})
             total += 1
     yield f'],"total_rows":{total}}}\n'
 
