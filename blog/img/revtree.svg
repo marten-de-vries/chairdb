@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.0//EN" "http://www.w3.org/TR/2001/PR-SVG-20010719/DTD/svg10.dtd">
+<svg width="26cm" height="13cm" viewBox="19 28 502 253" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <g id="Achtergrond">
+    <g>
+      <rect style="fill: #ffffff; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x="20" y="120" width="140" height="80" rx="0" ry="0"/>
+      <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:middle;font-family:sans-serif;font-style:normal;font-weight:normal" x="90" y="147.881">
+        <tspan x="90" y="147.881">_id: roadside</tspan>
+        <tspan x="90" y="163.881">_rev: 1-1a9c</tspan>
+        <tspan x="90" y="179.881">40 trees planted</tspan>
+      </text>
+    </g>
+    <g>
+      <rect style="fill: #ffffff; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x="200" y="60" width="140" height="80" rx="0" ry="0"/>
+      <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:middle;font-family:sans-serif;font-style:normal;font-weight:normal" x="270" y="87.8812">
+        <tspan x="270" y="87.8812">_id: roadside</tspan>
+        <tspan x="270" y="103.881">_rev: 2-6e05</tspan>
+        <tspan x="270" y="119.881">41 tree planted</tspan>
+      </text>
+    </g>
+    <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:start;font-family:sans-serif;font-style:normal;font-weight:normal" x="200" y="40">
+      <tspan x="200" y="40">Jane's branch:</tspan>
+    </text>
+    <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:start;font-family:sans-serif;font-style:normal;font-weight:normal" x="200" y="180">
+      <tspan x="200" y="180">Bob's branch:</tspan>
+    </text>
+    <g>
+      <rect style="fill: #ffffff; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x="200" y="200" width="140" height="80" rx="0" ry="0"/>
+      <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:middle;font-family:sans-serif;font-style:normal;font-weight:normal" x="270" y="227.881">
+        <tspan x="270" y="227.881">_id: roadside</tspan>
+        <tspan x="270" y="243.881">_rev: 2-e3b0</tspan>
+        <tspan x="270" y="259.881">41 tree planted</tspan>
+      </text>
+    </g>
+    <g>
+      <rect style="fill: #ffffff; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x="380" y="200" width="140" height="80" rx="0" ry="0"/>
+      <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:middle;font-family:sans-serif;font-style:normal;font-weight:normal" x="450" y="227.881">
+        <tspan x="450" y="227.881">_id: roadside</tspan>
+        <tspan x="450" y="243.881">_rev: 3-5bd6</tspan>
+        <tspan x="450" y="259.881">42 trees planted</tspan>
+      </text>
+    </g>
+    <g>
+      <rect style="fill: #eeeeee; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x="380" y="60" width="140" height="80" rx="0" ry="0"/>
+      <text font-size="12.8" style="fill: #000000; fill-opacity: 1; stroke: none;text-anchor:middle;font-family:sans-serif;font-style:normal;font-weight:normal" x="450" y="87.8812">
+        <tspan x="450" y="87.8812">_id: roadside</tspan>
+        <tspan x="450" y="103.881">_rev: 3-b617</tspan>
+        <tspan x="450" y="119.881">_deleted: true</tspan>
+      </text>
+    </g>
+    <g>
+      <line style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x1="160.664" y1="136.445" x2="188.9" y2="127.033"/>
+      <polygon style="fill: #000000; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" fill-rule="evenodd" points="190.482,131.777 198.387,123.871 187.319,122.29 "/>
+    </g>
+    <g>
+      <line style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x1="160.664" y1="191.406" x2="189.284" y2="204.126"/>
+      <polygon style="fill: #000000; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" fill-rule="evenodd" points="187.253,208.695 198.422,208.188 191.315,199.557 "/>
+    </g>
+    <g>
+      <line style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x1="340.664" y1="100" x2="368.336" y2="100"/>
+      <polygon style="fill: #000000; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" fill-rule="evenodd" points="368.336,105 378.336,100 368.336,95 "/>
+    </g>
+    <g>
+      <line style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" x1="340.664" y1="240" x2="368.336" y2="240"/>
+      <polygon style="fill: #000000; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" fill-rule="evenodd" points="368.336,245 378.336,240 368.336,235 "/>
+    </g>
+  </g>
+</svg>

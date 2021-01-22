@@ -1,0 +1,95 @@
+html {
+  background-color: #eee;
+}
+
+nav {
+  margin: 1em;
+  margin-right: 0;
+  background-color: #eee;
+  float: right;
+  padding: 1em;
+}
+
+nav:before {
+  content: "Table of Contents";
+  font-size: 2em;
+  font-weight: bold;
+}
+
+nav > ul > li:nth-child(3) > ul > li:nth-child(1):after {
+  content: "\A↑ The real coding starts here.";
+  white-space: pre-wrap;
+}
+
+body {
+  max-width: 960px;
+  margin: auto;
+  padding: 1em;
+  color: #222;
+  line-height: 1.6;
+  background-color: #fff;
+  text-align: justify;
+  font-family: sans-serif;
+}
+
+figcaption {
+    max-width: 400px;
+}
+
+h2, h3 {
+  color: #111;
+}
+
+header {
+  background-color: #ddd;
+  padding: 0.5em 2em;
+}
+.author, .date, .title {
+  margin: 0;
+}
+
+.title {
+  text-align: center;
+  color: #000;
+  margin-bottom: 0.5em;
+}
+
+figure {
+  float: right;
+  clear: both;
+}
+
+figure:nth-of-type(odd) {
+  float: left;
+}
+
+img {
+  width: 100%;
+  max-width: 400px;
+}
+
+.footnote-back {
+  padding-left: 0.5em;
+}
+
+.subtitle {
+  float: right;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+table td, table th {
+  border: 1px solid black;
+  padding: 0.25em;
+}
+
+@media print {
+  html {
+    background-color: transparent;
+  }
+  body {
+    font-family: serif;
+  }
+}
