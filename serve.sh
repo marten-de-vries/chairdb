@@ -1,2 +1,2 @@
 #!/bin/bash
-uvicorn microcouch.server:app --reload --reload-dir=microcouch
+uvicorn chairdb.server:app --reload --reload-dir=chairdb

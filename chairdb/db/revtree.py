@@ -3,8 +3,8 @@ import typing
 
 
 class Branch(typing.NamedTuple):
-    """A tree Branch, consisting of the leaf's revision number, it's parent
-    revision hashes and a document (or None if deleted).
+    """A tree Branch, consisting of the leaf's revision number, it's own and
+    ancestor revision hashes and a document (or None if deleted).
 
     """
     leaf_rev_num: int
@@ -38,8 +38,8 @@ class RevisionTree(list):
     (from low -> high). This simplifies winner determination.
 
     """
-    def __init__(self, children):
-        super().__init__(children)
+    def __init__(self, branches):
+        super().__init__(branches)
 
         # used to keep sorted by leaf's revision number and hash
         self._keys = [self._by_max_rev(branch) for branch in self]
@@ -92,9 +92,9 @@ class RevisionTree(list):
     def _insert_as_new_branch(self, doc_rev_num, doc_path, doc, revs_limit):
         for branch in self.branches():
             # 3. try to find common history
-            start_leaf_rev_num = branch.leaf_rev_num + 1 - len(branch.path)
+            start_branch_rev_num = branch.leaf_rev_num + 1 - len(branch.path)
             start_doc_rev_num = doc_rev_num + 1 - len(doc_path)
-            maybe_common_rev_num = max(start_leaf_rev_num, start_doc_rev_num)
+            maybe_common_rev_num = max(start_branch_rev_num, start_doc_rev_num)
 
             branch_i = branch.index(maybe_common_rev_num)
             doc_i = doc_rev_num - maybe_common_rev_num
@@ -126,25 +126,22 @@ class RevisionTree(list):
         self._keys.insert(i, key)
         self.insert(i, branch)
 
-    def find(self, revs):
-        """For each revision number in 'revs', find the branch pointed to by
-        said revisions.
+    def find(self, rev_num, rev_hash):
+        """Find the branch in which the revision specified by the arguments
+        occurs.
 
         """
-        for rev_num, rev_hash in revs:
-            for branch in self.branches():
-                i = branch.index(rev_num)
-                if 0 <= i < len(branch.path) and branch.path[i] == rev_hash:
-                    yield branch
-                    break  # check the next requested rev
+        for branch in self.branches():
+            i = branch.index(rev_num)
+            if 0 <= i < len(branch.path) and branch.path[i] == rev_hash:
+                return branch
 
     def branches(self):
         """All branches in the tree. Those with the highest revision number and
         hash first.
 
         """
-        for branch in reversed(self):
-            yield branch
+        return reversed(self)
 
     def winner_idx(self):
         """Returns the index of the winning branch, i.e. the one with the
@@ -161,7 +158,8 @@ class RevisionTree(list):
         return len(self) - 1  # no non-deleted ones exist
 
     def all_revs(self):
-        """All revisions in the tree. Some can be yielded multiple times."""
+        """All revisions in the tree as (branch, rev_num) tuples. Some can be
+        yielded multiple times."""
 
         for branch in self.branches():
             for i in range(len(branch.path)):

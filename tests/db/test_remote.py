@@ -1,7 +1,7 @@
 import pytest
 
-from microcouch import HTTPDatabase
-from microcouch.utils import async_iter
+from chairdb import HTTPDatabase
+from chairdb.utils import async_iter
 
 DOCS = [
     {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {

@@ -1,0 +1,10 @@
+sortedcontainers
+starlette
+httpx
+ijson
+databases
+aiosqlite
+flake8
+pytest
+pytest-asyncio
+pytest-cov

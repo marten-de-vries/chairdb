@@ -31,7 +31,7 @@ SUCCESS = {
 
 def root(request):
     return JSONResp({
-        "microcouch": "Welcome!",
+        "chairdb": "Welcome!",
         "version": __version__,
         "uuid": request.app.state.server_id.hex,
         "features": [],

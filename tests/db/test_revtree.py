@@ -1,4 +1,4 @@
-from microcouch.db.revtree import RevisionTree, Branch
+from chairdb.db.revtree import RevisionTree, Branch
 
 
 def validate_rev_tree(tree):

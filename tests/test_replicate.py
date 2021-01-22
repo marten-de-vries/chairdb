@@ -5,8 +5,8 @@ import contextlib
 import databases
 import pprint
 
-from microcouch import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
-                        NotFound, app)
+from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
+                     NotFound, app)
 
 
 @pytest.mark.asyncio

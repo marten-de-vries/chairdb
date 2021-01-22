@@ -1,6 +1,6 @@
 import pytest
-from microcouch import InMemoryDatabase, Change, NotFound
-from microcouch.utils import async_iter, to_list
+from chairdb import InMemoryDatabase, Change, NotFound
+from chairdb.utils import async_iter, to_list
 
 
 @pytest.fixture

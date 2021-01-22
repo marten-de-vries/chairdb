@@ -1,19 +1,19 @@
 import typing
 
 
-class MicroCouchError(Exception):
+class ChairDBError(Exception):
     """Base class for all custom errors."""
 
 
-class Forbidden(MicroCouchError):
+class Forbidden(ChairDBError):
     """You need to log in."""
 
 
-class Unauthorized(MicroCouchError):
+class Unauthorized(ChairDBError):
     """You are logged in, but not allowed to do this."""
 
 
-class NotFound(MicroCouchError):
+class NotFound(ChairDBError):
     """Something (a document or database, probably) doesn't exist."""
 
 

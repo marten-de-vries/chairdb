@@ -37,6 +37,7 @@ def prepare_doc_write(doc):
     else:
         rev_num, rev_hash = parse_rev(doc.pop('_rev'))
         revs = doc.pop('_revisions', {'start': rev_num, 'ids': [rev_hash]})
+        assert rev_num == revs['start'], 'Invalid _revisions'
         assert revs['ids'][0] == rev_hash, 'Invalid _revisions'
     if doc.get('_deleted'):
         doc = None
@@ -49,7 +50,7 @@ def is_local(id):
 
 def read_docs(id, revs, include_path, rev_tree, winning_branch_idx):
     if revs == 'winner':
-        # the information is stored in the DocumentInfo directly
+        # winner information is passed in directly
         branch = rev_tree[winning_branch_idx]
         yield to_doc(id, branch, include_path)
     else:
@@ -63,10 +64,11 @@ def read_revs(id, revs, rev_tree, include_path):
         for branch in rev_tree.branches():
             yield to_doc(id, branch, include_path)
     else:
-        revs = {parse_rev(rev) for rev in revs}
         # search for specific revisions
-        for branch in rev_tree.find(revs):
-            yield to_doc(id, branch, include_path)
+        for rev in revs:
+            branch = rev_tree.find(*parse_rev(rev))
+            if branch:
+                yield to_doc(id, branch, include_path)
 
 
 def to_doc(id, branch, include_path):
