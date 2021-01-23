@@ -66,8 +66,7 @@ def read_revs(id, revs, rev_tree, include_path):
     else:
         # search for specific revisions
         for rev in revs:
-            branch = rev_tree.find(*parse_rev(rev))
-            if branch:
+            for branch in rev_tree.find(*parse_rev(rev)):
                 yield to_doc(id, branch, include_path)
 
 

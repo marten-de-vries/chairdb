@@ -41,10 +41,11 @@ class RevisionTree(list):
     def __init__(self, branches):
         super().__init__(branches)
 
-        # used to keep sorted by leaf's revision number and hash
+        # used to keep the tree sorted by leaf's revision number and hash
         self._keys = [self._by_max_rev(branch) for branch in self]
 
     def _by_max_rev(self, branch):
+        # branch.path[0] is the leaf's revision hash
         return branch.leaf_rev_num, branch.path[0]
 
     def merge_with_path(self, doc_rev_num, doc_path, doc, revs_limit=1000):
@@ -119,22 +120,22 @@ class RevisionTree(list):
         assert revs_limit > 0
         del full_path[revs_limit:]
 
-        # actual insertion using bisection
         branch = Branch(doc_rev_num, full_path, doc)
+        # actual insertion using bisection
         key = self._by_max_rev(branch)
         i = bisect.bisect(self._keys, key)
         self._keys.insert(i, key)
         self.insert(i, branch)
 
     def find(self, rev_num, rev_hash):
-        """Find the branch in which the revision specified by the arguments
+        """Find the branches in which the revision specified by the arguments
         occurs.
 
         """
         for branch in self.branches():
             i = branch.index(rev_num)
             if 0 <= i < len(branch.path) and branch.path[i] == rev_hash:
-                return branch
+                yield branch
 
     def branches(self):
         """All branches in the tree. Those with the highest revision number and
@@ -158,8 +159,7 @@ class RevisionTree(list):
         return len(self) - 1  # no non-deleted ones exist
 
     def all_revs(self):
-        """All revisions in the tree as (branch, rev_num) tuples. Some can be
-        yielded multiple times."""
+        """All revisions in the tree as (branch, rev_num) tuples."""
 
         for branch in self.branches():
             for i in range(len(branch.path)):

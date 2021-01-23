@@ -1,8 +1,33 @@
 # ChairDB
 
-A small but CouchDB-compatible database implementation in Python. Also implements replication.
+A small but CouchDB-compatible database implementation in Python. It provides its own implementation of the replication protocol.
 
-For more information, please read the [blog post](https://ma.rtendevri.es/chairdb.html).
+Different backends are supported:
+
+- in-memory
+- SQLite
+- HTTP (proxy to a CouchDB instance)
+
+This project also contains an implementation of the CouchDB HTTP API in the ``chairdb.server`` package.
+
+For more information, please read the [blog post](https://ma.rtendevri.es/chairdb/) introducing this project.
+
+## Example
+
+```python
+import asyncio
+from chairdb import InMemoryDatabase, HTTPDatabase, replicate
+
+async def main():
+		target = InMemoryDatabase(id='test')
+		async with HTTPDatabase('http://localhost:5984/test') as source:
+				await replicate(source, target)
+		async for change in target.changes():
+				print(change)
+
+if __name__ == '__main__':
+		asyncio.run(main())
+```
 
 ## File overview
 
@@ -25,4 +50,3 @@ For more information, please read the [blog post](https://ma.rtendevri.es/chaird
 - requirements.txt: install using ``pip -r requirements.txt``
 - serve.sh: starts Uvicorn with the ASGI app defined in chairdb.server. Auto-reloads when changes are made.
 - test.sh: run the test suites. Requires you to have a CouchDB instance running with two databases: activiteitenweger and brassbandwirdum. So rename some of your own to be called that, or search for those terms in the source so you can replace them.
-

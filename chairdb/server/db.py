@@ -66,14 +66,14 @@ def changes(request):
 
 async def stream_changes_continuous(changes):
     async for change in changes:
-        yield change_row_json(change)
+        yield f'{change_row_json(change)}\n'
 
 
 def change_row_json(change):
     id, seq, deleted, leaf_revs = change
     changes = [{'rev': rev} for rev in leaf_revs]
     row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
-    return f'{as_json(row)}\n'
+    return as_json(row)
 
 
 async def stream_changes(changes):

@@ -54,13 +54,13 @@ class SyncInMemoryDatabase:
 
     def write_sync(self, doc):
         id, revs, doc = prepare_doc_write(doc)
-        if not revs:
-            self._write_local(id, doc)
-        else:
+        if revs:
             self._write_normal(id, revs, doc)
+        else:
+            self._write_local(id, doc)
 
     def _write_local(self, id, doc):
-        if not doc:
+        if doc is None:
             self._local.pop(id, None)  # silence KeyError
         else:
             self._local[id] = doc
@@ -186,7 +186,7 @@ class InMemoryDatabase(SyncInMemoryDatabase, ContinuousChangesMixin):
         """
         async for id, revs in requested:
             try:
-                for doc in self.read_sync(id, revs):
+                for doc in self.read_sync(id, revs, include_path):
                     yield doc
             except NotFound as exc:
                 yield exc

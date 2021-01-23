@@ -1,7 +1,3 @@
-html {
-  background-color: #eee;
-}
-
 nav {
   margin: 1em;
   margin-right: 0;
@@ -17,19 +13,20 @@ nav:before {
 }
 
 nav > ul > li:nth-child(3) > ul > li:nth-child(1):after {
-  content: "\A↑ The real coding starts here.";
+  content: "\A↑ The actual coding starts here.";
   white-space: pre-wrap;
 }
 
 body {
-  max-width: 960px;
+  max-width: 930px;
   margin: auto;
   padding: 1em;
   color: #222;
   line-height: 1.6;
+  font-size: 14pt;
   background-color: #fff;
   text-align: justify;
-  font-family: sans-serif;
+  font-family: Helvetica, Arial, sans-serif;
 }
 
 figcaption {
@@ -55,13 +52,19 @@ header {
 }
 
 figure {
-  float: right;
   clear: both;
 }
 
 figure:nth-of-type(odd) {
   float: left;
+  margin-left: 0;
 }
+
+figure:nth-of-type(even) {
+  float: right;
+  margin-right: 0;
+}
+
 
 img {
   width: 100%;
