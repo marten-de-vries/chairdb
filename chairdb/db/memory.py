@@ -4,11 +4,10 @@ import asyncio
 import uuid
 import typing
 
-from .datatypes import NotFound
+from .datatypes import NotFound, Document
 from .revtree import RevisionTree
-from .shared import (build_change, revs_diff, prepare_doc_write, read_docs,
-                     ContinuousChangesMixin, to_local_doc, is_local,
-                     update_doc, as_future_result)
+from .shared import (build_change, revs_diff, read_docs,
+                     ContinuousChangesMixin, update_doc, as_future_result)
 
 
 class DocumentInfo(typing.NamedTuple):
@@ -53,21 +52,20 @@ class SyncInMemoryDatabase:
         return revs_diff(id, revs, rev_tree)
 
     def write_sync(self, doc):
-        id, revs, doc = prepare_doc_write(doc)
-        if revs:
-            self._write_normal(id, revs, doc)
+        if doc.is_local:
+            self._write_local(doc)
         else:
-            self._write_local(id, doc)
+            self._write_normal(doc)
 
-    def _write_local(self, id, doc):
-        if doc is None:
-            self._local.pop(id, None)  # silence KeyError
+    def _write_local(self, doc):
+        if doc.deleted:
+            self._local.pop(doc.id, None)  # silence KeyError
         else:
-            self._local[id] = doc
+            self._local[doc.id] = doc.body
 
-    def _write_normal(self, id, revs, doc):
+    def _write_normal(self, doc):
         try:
-            tree, _, last_update_seq = self._byid[id]
+            tree, _, last_update_seq = self._byid[doc.id]
         except KeyError:
             tree = None
         else:
@@ -76,21 +74,21 @@ class SyncInMemoryDatabase:
             # inserting a new one.
             del self._byseq[last_update_seq]
 
-        new_doc_info = update_doc(id, revs, doc, tree, self.revs_limit_sync)
+        new_doc_info = update_doc(doc, tree, self.revs_limit_sync)
         self.update_seq_sync += 1
         # actual insertion by updating the document info in the 'by id' index.
-        self._byid[id] = DocumentInfo(*new_doc_info, self.update_seq_sync)
-        self._byseq[self.update_seq_sync] = id
+        self._byid[doc.id] = DocumentInfo(*new_doc_info, self.update_seq_sync)
+        self._byseq[self.update_seq_sync] = doc.id
 
-    def read_sync(self, id, revs, include_path=False):
+    def read_sync(self, id, revs):
         try:
-            if is_local(id):
-                # load from the _local key-value store
-                yield to_local_doc(id, revs, self._local[id])
-            else:
+            if revs:
                 # find it using the 'by id' index
                 rev_tree, winner, _ = self._byid[id]
-                yield from read_docs(id, revs, include_path, rev_tree, winner)
+                yield from read_docs(id, revs, rev_tree, winner)
+            else:
+                # load from the _local key-value store
+                yield Document(id, body=self._local[id])
         except KeyError as e:
             raise NotFound(id) from e
 
@@ -165,7 +163,7 @@ class InMemoryDatabase(SyncInMemoryDatabase, ContinuousChangesMixin):
             except Exception as exc:
                 yield exc
 
-    async def read(self, requested, include_path=False):
+    async def read(self, requested):
         """Like CouchDB's GET dbname/docid?latest=true, but allows asking for
         multiple documents at once. 'reqested' is an (async) iterable of
         (id, revs) tuples. 'id' is the document id. 'revs' specify which
@@ -177,16 +175,13 @@ class InMemoryDatabase(SyncInMemoryDatabase, ContinuousChangesMixin):
         - a list of revisions (which you would get from CouchDB when manually
           specifying 'open_revs=[...]'.
 
-        include_path=True is like setting 'revs=true' on CouchDB, i.e. it
-        includes a '_revisions' key in the document.
-
         Note that, for non-'winner' values of revs, this can return multiple
         document leafs. That's why this method is an (async) generator.
 
         """
         async for id, revs in requested:
             try:
-                for doc in self.read_sync(id, revs, include_path):
+                for doc in self.read_sync(id, revs):
                     yield doc
             except NotFound as exc:
                 yield exc

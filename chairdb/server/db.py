@@ -14,9 +14,10 @@ from starlette.routing import Route
 import uuid
 
 from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
-                     parse_json_stream)
+                     parse_json_stream, rev, couchdb_json_to_doc,
+                     doc_to_couchdb_json, parse_rev)
 from ..db.datatypes import NotFound
-from ..db.shared import rev
+from ..db.shared import rev_tuple
 from .utils import JSONResp, parse_query_arg
 
 FULL_COMMIT = {
@@ -49,10 +50,10 @@ class Database(HTTPEndpoint):
 
 
 def changes(request):
-    style = parse_query_arg(request, 'style', default='main_only')
+    if parse_query_arg(request, 'style', default='main_only') != 'all_docs':
+        print('style =/= all_docs, but we do that anyway!')
     since = int(parse_query_arg(request, 'since', default=0))
     feed = parse_query_arg(request, 'feed', default='normal')
-    assert style == 'all_docs'
     continuous = feed == 'continuous'
 
     changes = get_db(request).changes(since, continuous)
@@ -71,7 +72,7 @@ async def stream_changes_continuous(changes):
 
 def change_row_json(change):
     id, seq, deleted, leaf_revs = change
-    changes = [{'rev': rev} for rev in leaf_revs]
+    changes = [{'rev': rev(*lr)} for lr in leaf_revs]
     row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
     return as_json(row)
 
@@ -90,17 +91,23 @@ async def stream_changes(changes):
 
 async def revs_diff(request):
     remote = parse_json_stream(request.stream(), 'kvitems', '')
-    generator = stream_revs_diff(get_db(request), remote)
+    generator = stream_revs_diff(get_db(request), parse_revs(remote))
     return StreamingResponse(generator, media_type='application/json')
+
+
+async def parse_revs(data):
+    async for id, revs in data:
+        yield id, [parse_rev(r) for r in revs]
 
 
 async def stream_revs_diff(db, remote):
     yield '{'
     result = db.revs_diff(remote)
-    async for i, (id, info) in aenumerate(result):
+    async for i, missing in aenumerate(result):
         if i > 0:
             yield ','
-        yield f'{as_json(id)}:{as_json(info)}'
+        revs = [rev(*r) for r in missing.missing_revs]
+        yield f'{as_json(missing.id)}:{as_json({"missing": revs})}'
     yield '}\n'
 
 
@@ -123,7 +130,7 @@ def all_docs_stream(db):
         if branch.leaf_doc_ptr:
             if total != 0:
                 yield ','
-            r = rev(branch, branch.leaf_rev_num)
+            r = rev(*rev_tuple(branch, branch.leaf_rev_num))
             yield as_json({'id': key, 'key': key, 'value': {'rev': r}})
             total += 1
     yield f'],"total_rows":{total}}}\n'
@@ -132,7 +139,8 @@ def all_docs_stream(db):
 async def bulk_docs(request):
     req = await request.json()
     assert not req.get('new_edits', True)
-    generator = bulk_docs_stream(get_db(request), req['docs'])
+    docs = [couchdb_json_to_doc(json) for json in req['docs']]
+    generator = bulk_docs_stream(get_db(request), docs)
     return StreamingResponse(generator, 201, media_type='application/json')
 
 
@@ -153,28 +161,30 @@ def local_docs(request):
 
 def stream_local_docs(db):
     yield '{"rows": ['
-    for i, doc in enumerate(db._local.values()):
+    for i, id in enumerate(db._local.keys()):
         if i > 0:
             yield ','
+        full_id = f"_local/{id}"
         yield as_json({
-            'id': doc['_id'],
-            'key': doc['_id'],
+            'id': full_id,
+            'key': full_id,
             'value': {'rev': '0-1'},
         })
     yield ']}\n'
 
 
 async def bulk_get(request):
+    if not parse_query_arg(request, 'revs', default=False):
+        print('revs=true not requested, but we do it anyway!')
     req = parse_bulk_get_request(request)
-    include_path = parse_query_arg(request, 'revs')
-    generator = stream_bulk_get(get_db(request), req, include_path)
+    generator = stream_bulk_get(get_db(request), req)
     return StreamingResponse(generator, media_type='application/json')
 
 
 async def parse_bulk_get_request(request):
     async for id, docs in group_by(request.stream(), key=lambda d: d['id']):
         try:
-            revs = [doc['rev'] for doc in docs]
+            revs = [parse_rev(doc['rev']) for doc in docs]
         except KeyError:
             revs = 'all'
         yield id, revs
@@ -195,20 +205,27 @@ async def group_by(stream, key):
     yield last_key, docs
 
 
-async def stream_bulk_get(db, req, include_path):
+async def stream_bulk_get(db, req):
     yield '{"results": ['
-    async for i, doc in aenumerate(db.read(req, include_path)):
-        yield as_json({'docs': [{'ok': doc}], 'id': doc['_id']})
+    async for i, doc in aenumerate(db.read(req)):
+        json = doc_to_couchdb_json(doc)
+        yield as_json({'docs': [{'ok': json}], 'id': doc.id})
     yield ']}\n'
 
 
 class Document(HTTPEndpoint):
     async def get(self, request):
-        doc_id = request.path_params['id']
-        revs = self._parse_revs(request)
-        include_path = parse_query_arg(request, 'revs', default=False)
+        if not parse_query_arg(request, 'revs', default=False):
+            print('revs=true not requested, but we do it anyway!')
 
-        resp = get_db(request).read(async_iter([(doc_id, revs)]), include_path)
+        doc_id = request.path_params['id']
+        if doc_id.startswith('_local/'):
+            doc_id = doc_id[len('_local/'):]
+            revs = None
+        else:
+            revs = self._parse_revs(request)
+
+        resp = get_db(request).read(async_iter([(doc_id, revs)]))
 
         first_two, resp_orig = await peek(resp, n=2)
         if isinstance(first_two[0], NotFound):
@@ -232,13 +249,16 @@ class Document(HTTPEndpoint):
                 revs = 'winner'
             else:
                 revs = [rev]
-        assert revs in ['winner', 'all'] or parse_query_arg(request, 'latest')
+        if revs not in ['winner', 'all']:
+            if not parse_query_arg(request, 'latest'):
+                print('latest=true not requested, but we do it anyway!')
+            revs = [parse_rev(r) for r in revs]
         return revs
 
     async def _multipart_response(self, items, boundary):
         async for item in items:
             yield f'--{boundary}\r\nContent-Type: application/json\r\n\r\n'
-            yield f'{as_json(item)}\r\n'
+            yield f'{as_json(doc_to_couchdb_json(item))}\r\n'
         yield f'--{boundary}--'
 
     async def put(self, request):
@@ -246,7 +266,7 @@ class Document(HTTPEndpoint):
         if not doc_id.startswith('_local/'):
             return JSONResp(DOC_NOT_FOUND, 404)  # FIXME
 
-        doc = await request.json()
+        doc = couchdb_json_to_doc(await request.json())
 
         await to_list(get_db(request).write(async_iter([doc])))
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
@@ -255,7 +275,7 @@ class Document(HTTPEndpoint):
         doc_id = request.path_params['id']
         assert doc_id.startswith('_local/')
 
-        docs = async_iter([{'_id': doc_id, '_deleted': True}])
+        docs = async_iter([Document(doc_id)])
         try:
             await get_db(request).write(docs).__anext__()
         except StopAsyncIteration:

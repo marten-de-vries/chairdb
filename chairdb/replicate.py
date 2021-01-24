@@ -2,7 +2,7 @@ import email.utils
 import hashlib
 import uuid
 
-from .db.datatypes import NotFound
+from .db.datatypes import NotFound, Document
 from .utils import async_iter, to_list
 
 REPLICATION_ID_VERSION = 1
@@ -34,8 +34,7 @@ async def replicate(source, target, create_target=False, continuous=False):
                                        continuous)
 
     # - 2.4.2.3.2. Retrieve Replication Logs from Source and Target
-    log_id = f'_local/{replication_id}'
-    log_request = [(log_id, 'winner')]
+    log_request = [(replication_id, None)]
     source_log = await source.read(async_iter(log_request)).__anext__()
     target_log = await target.read(async_iter(log_request)).__anext__()
 
@@ -50,12 +49,11 @@ async def replicate(source, target, create_target=False, continuous=False):
     diff_input = revs_diff_input(changes, hist_entry)
 
     # - 2.4.2.4.3. Calculate Revision Difference
-    r_input = read_input(target.revs_diff(diff_input))
+    differences = target.revs_diff(diff_input)
 
     # 2.4.2.5. Replicate Changes
     #  - 2.4.2.5.1. Fetch Changed Documents
-    write_input = count_docs(source.read(r_input, include_path=True),
-                             hist_entry)
+    write_input = count_docs(source.read(differences), hist_entry)
 
     # - 2.4.2.5.2. Upload Batch of Changed Documents
     async for error in target.write(write_input):
@@ -76,10 +74,12 @@ async def replicate(source, target, create_target=False, continuous=False):
         'source_last_seq': hist_entry['recorded_seq'],
     }
     if hist_entry['recorded_seq'] != startup_checkpoint:
-        new_source_log = {'history': build_history(source_log, hist_entry),
-                          '_id': log_id, **new_log_shared}
-        new_target_log = {'history': build_history(target_log, hist_entry),
-                          '_id': log_id, **new_log_shared}
+        new_source_log = Document(replication_id, body={
+            'history': build_history(source_log, hist_entry), **new_log_shared
+        })
+        new_target_log = Document(replication_id, body={
+            'history': build_history(target_log, hist_entry), **new_log_shared
+        })
 
         await to_list(source.write(async_iter([new_source_log])))
         await to_list(target.write(async_iter([new_target_log])))
@@ -149,13 +149,6 @@ async def revs_diff_input(changes, history_entry):
     async for change in changes:
         yield change.id, change.leaf_revs
         history_entry['recorded_seq'] = change.seq
-
-
-async def read_input(revs_diff):
-    async for id, info in revs_diff:
-        # TODO: record missing_checked / missing_found in history_entry?
-        if info['missing']:
-            yield id, info['missing']
 
 
 async def count_docs(docs, history_entry):

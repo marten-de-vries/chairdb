@@ -2,7 +2,7 @@
 
 rm -r out
 mkdir out
-cp blog.md out/blog.md
+cp blog.md out/blog.txt
 cp style.css out/style.css
 cp -r img out/img
 pandoc blog.md -s --number-sections --toc --css style.css -o out/index.html --default-image-extension svg

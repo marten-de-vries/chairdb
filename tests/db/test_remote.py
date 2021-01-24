@@ -1,17 +1,11 @@
 import pytest
 
-from chairdb import HTTPDatabase
+from chairdb import HTTPDatabase, Document
 from chairdb.utils import async_iter
 
 DOCS = [
-    {'_id': 'mytest', '_rev': '1-x', 'Hello': 'World!', '_revisions': {
-        'start': 1,
-        'ids': ['x'],
-    }},
-    {'_id': 'mytest', '_rev': '2-y', '_deleted': True, '_revisions': {
-        'start': 2,
-        'ids': ['y', 'x']
-    }}
+    Document('mytest', 1, ['x'], {'Hello': 'World!'}),
+    Document('mytest', 2, ['y', 'x'])
 ]
 
 
@@ -25,7 +19,7 @@ async def test_remote():  # noqa: C901
 
             assert await db.update_seq
             # query some unexisting rev
-            query = [('unexisting', ['1-x', '2-y']), ('abc', ['1-a'])]
+            query = [('unexisting', [(1, 'x'), (2, 'y')]), ('abc', [(1, 'a')])]
             async for change in db.revs_diff(async_iter(query)):
                 print(change)
             async for result in db.write(async_iter(DOCS)):
@@ -34,7 +28,7 @@ async def test_remote():  # noqa: C901
                 # three different ways...
                 ('mytest', 'all'),
                 ('mytest', 'winner'),
-                ('mytest', ['2-y']),
+                ('mytest', [(2, 'y')]),
             ]
             async for result in db.read(async_iter(req)):
                 print(result)

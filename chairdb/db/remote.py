@@ -4,9 +4,10 @@ import asyncio
 import httpx
 import json
 
-from .datatypes import Unauthorized, Forbidden, NotFound, Change
+from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from .multipart import MultipartResponseParser
-from ..utils import as_json, parse_json_stream, aenumerate
+from ..utils import (as_json, parse_json_stream, aenumerate, parse_rev, rev,
+                     couchdb_json_to_doc, doc_to_couchdb_json)
 
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}
@@ -83,7 +84,7 @@ class HTTPDatabase(httpx.AsyncClient):
             async for c in self._parse_changes_response(resp, continuous):
                 # TODO: handle timeouts
                 deleted = c.get('deleted', False)
-                leaf_revs = [item['rev'] for item in c['changes']]
+                leaf_revs = [parse_rev(item['rev']) for item in c['changes']]
                 yield Change(c['id'], c['seq'], deleted, leaf_revs)
 
     async def _parse_changes_response(self, resp, continuous):
@@ -105,7 +106,7 @@ class HTTPDatabase(httpx.AsyncClient):
 
             async for id, info in parse_json_stream(resp.aiter_bytes(),
                                                     'kvitems', ''):
-                yield id, info
+                yield Missing(id, [parse_rev(r) for r in info['missing']])
 
     async def _revs_diff_body(self, remote):
         yield b'{'
@@ -114,14 +115,16 @@ class HTTPDatabase(httpx.AsyncClient):
                 yield b','
             yield as_json(id).encode('UTF-8')
             yield b':'
-            yield as_json(revs).encode('UTF-8')
+            yield as_json([rev(*r) for r in revs]).encode('UTF-8')
         yield b'}\n'
 
     async def write(self, docs):
         body = self._bulk_docs_body(docs)
         async with self._stream('POST', '/_bulk_docs', data=body,
                                 headers=JSON_REQ_HEADERS) as resp:
-            assert resp.status_code == httpx.codes.CREATED
+            if resp.status_code != httpx.codes.CREATED:
+                await resp.aread()
+                assert resp.status_code == httpx.codes.CREATED
             async for row in parse_json_stream(resp.aiter_bytes(), 'items',
                                                'item'):
                 yield row
@@ -131,16 +134,16 @@ class HTTPDatabase(httpx.AsyncClient):
         async for i, doc in aenumerate(docs):
             if i > 0:
                 yield b','
-            yield as_json(doc).encode('UTF-8')
+            json = doc_to_couchdb_json(doc)
+            yield as_json(json).encode('UTF-8')
         yield b']}'
 
-    async def read(self, requested, include_path=False):
+    async def read(self, requested):
         # the method for reading the docs in parallel is inspired by:
         # https://stackoverflow.com/a/55317623
 
         queue = asyncio.Queue()
-        read_task = asyncio.create_task(self._read_task(requested,
-                                                        include_path, queue))
+        read_task = asyncio.create_task(self._read_task(requested, queue))
 
         # keep reading until done, but also quickly return results as they
         # become available.
@@ -157,12 +160,14 @@ class HTTPDatabase(httpx.AsyncClient):
         while not queue.empty():
             yield queue.get_nowait()
 
-    async def _read_task(self, requested, include_path, queue):
+    async def _read_task(self, requested, queue):
         # read MAX_PARALLEL_READS docs at the same time. Results are put into
         # 'queue'
         tasks = set()
         async for id, revs in requested:
-            params = self._read_params(id, revs, include_path)
+            params = self._read_params(id, revs)
+            if not revs:
+                id = f'_local/{id}'
             docs = self._read_doc(id, revs, params)
 
             tasks.add(asyncio.create_task(self._drain_into(docs, queue)))
@@ -170,14 +175,12 @@ class HTTPDatabase(httpx.AsyncClient):
                 _, tasks = await asyncio.wait(tasks, return_when=FIRST_DONE)
         await asyncio.wait(tasks)
 
-    def _read_params(self, id, revs, include_path):
-        params = {'latest': 'true'}
-        if include_path:
-            params['revs'] = 'true'
+    def _read_params(self, id, revs):
+        params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
             params['open_revs'] = 'all'
-        elif revs != 'winner':
-            params['open_revs'] = as_json(revs)
+        elif revs is not None and revs != 'winner':
+            params['open_revs'] = as_json([rev(*r) for r in revs])
         return params
 
     async def _drain_into(self, docs, queue):
@@ -204,14 +207,14 @@ class HTTPDatabase(httpx.AsyncClient):
                 subparser = MultipartResponseParser(part)
                 async for sub in subparser:
                     assert sub.headers == {'Content-Type': 'application/json'}
-                    yield json.loads(await sub.aread())
+                    yield couchdb_json_to_doc(json.loads(await sub.aread()))
                     # first item is the document. TODO: handle attachments
                     # instead of skipping them like this:
                     subparser.parser.change_state(subparser.parser.DONE)
                     break
             else:
                 assert part.headers == {'Content-Type': 'application/json'}
-                yield json.loads(await part.aread())
+                yield couchdb_json_to_doc(json.loads(await part.aread()))
 
     async def ensure_full_commit(self):
         await self._request('POST', '_ensure_full_commit')

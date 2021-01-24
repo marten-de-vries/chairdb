@@ -2,10 +2,9 @@ import asyncio
 import json
 
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
-                     build_change, prepare_doc_write, update_doc, is_local,
-                     to_local_doc, read_docs)
+                     build_change, update_doc, read_docs)
 from .revtree import RevisionTree, Branch
-from .datatypes import NotFound
+from .datatypes import NotFound, Document
 from ..utils import as_json
 
 TABLE_CREATE = [
@@ -87,40 +86,40 @@ class SQLDatabase(ContinuousChangesMixin):
 
     async def write(self, docs):
         async for doc in docs:
-            id, revs, doc = prepare_doc_write(doc)
-            if revs:
+            if doc.is_local:
+                values = {'id': doc.id, 'document': as_json(doc.body)}
+                await self._db.execute(WRITE_LOCAL, values)
+            else:
                 try:
-                    await self._write_doc(id, revs, doc)
+                    await self._write_doc(doc)
                 except Exception as exc:
                     yield exc
-            else:
-                values = {'id': id, 'document': as_json(doc)}
-                await self._db.execute(WRITE_LOCAL, values)
 
-    async def _write_doc(self, id, revs, doc):
-        tree = await self._revs_tree(id)
+    async def _write_doc(self, doc):
+        tree = await self._revs_tree(doc.id)
         # TODO: non-fixed revs limit
-        new_tree, winner = update_doc(id, revs, doc, tree, revs_limit=1000)
-        values = {'id': id, 'rev_tree': as_json(new_tree), 'winner': winner}
+        new_tree, winner = update_doc(doc, tree, revs_limit=1000)
+        values = {'id': doc.id, 'rev_tree': as_json(new_tree),
+                  'winner': winner}
         await self._db.execute(WRITE, values)
         self._update_event.set()
         self._update_event.clear()
 
-    async def read(self, requested, include_path=False):
+    async def read(self, requested):
         async for id, revs in requested:
-            if is_local(id):
-                base = await self._db.fetch_one(query=READ_LOCAL,
-                                                values={'id': id})
-                if base:
-                    yield to_local_doc(id, revs, json.loads(base[0]))
-                else:
-                    yield NotFound(id)
-            else:
+            if revs:
                 values = {'id': id}
                 tree, winner = await self._db.fetch_one(READ, values)
                 rev_tree = self._decode_tree(tree)
-                for doc in read_docs(id, revs, include_path, rev_tree, winner):
+                for doc in read_docs(id, revs, rev_tree, winner):
                     yield doc
+            else:
+                base = await self._db.fetch_one(query=READ_LOCAL,
+                                                values={'id': id})
+                if base:
+                    yield Document(id, body=json.loads(base[0]))
+                else:
+                    yield NotFound(id)
 
     async def ensure_full_commit(self):
         # no-op, all writes are immediately committed

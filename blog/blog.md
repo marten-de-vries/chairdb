@@ -1,6 +1,6 @@
 ---
 title: "How to replicate: Building a CouchDB-compatible database in 400 lines of Python"
-subtitle: "estimated reading time: ≈40 min. | [TXT](blog.md) | [EPUB](blog.epub) | [PDF](blog.pdf)"
+subtitle: "estimated reading time: ≈ 34 min. | [TXT](blog.txt) | [EPUB](blog.epub) | [PDF](blog.pdf)"
 author: "[Marten de Vries](https://ma.rtendevri.es/)"
 date: 2021-01-22
 geometry: a5paper,margin=0.5cm,bmargin=1.5cm
@@ -8,7 +8,7 @@ cover-image: img/tree.jpg
 lang: en
 ---
 
-TL;DR: A tutorial for building a database that replicates like CouchDB in Python. Also introduces [ChairDB](https://github.com/marten-de-vries/chairdb).
+**TL;DR**: A tutorial for building a database that replicates like CouchDB in Python. Also introduces [ChairDB](https://github.com/marten-de-vries/chairdb).
 
 # Introduction
 
@@ -1164,7 +1164,7 @@ While the above is a full implementation of a CouchDB-compatible database and re
 
 ## Final words
 
-If you read this far, **congratulations**! You now know how to write a CouchDB-compatible database, including replication. If you write one of your own, or if you have any remarks, comments or questions, I'd love to hear from you. [Drop me an email](mailto:m@rtendevri.es), or [comment on HN](TODO). Thank you for reading!
+If you read this far, **congratulations**! You now know how to write a CouchDB-compatible database, including replication. If you write one of your own, or if you have any remarks, comments or questions, I'd love to hear from you. [Drop me an email](mailto:m@rtendevri.es), or [comment on HN](https://news.ycombinator.com/item?id=25892504). Thank you for reading!
 
 ---
 

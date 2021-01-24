@@ -6,7 +6,7 @@ import databases
 import pprint
 
 from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
-                     NotFound, app)
+                     NotFound, app, Document)
 
 
 @pytest.mark.asyncio
@@ -47,15 +47,15 @@ async def test_replicate(sql_target):
 @pytest.mark.asyncio
 async def test_replicate_continuous():
     source = InMemoryDatabase()
-    source.write_sync({'_id': 'test', '_rev': '1-a'})
+    source.write_sync(Document('test', 1, ['a'], {}))
     target = InMemoryDatabase()
     task = asyncio.create_task(replicate(source, target, continuous=True))
     # verify the 'normal' replication is done (everything in the db has been
     # replicated succesfully)
-    await document_existance(target, {'_id': 'test', '_rev': '1-a'})
+    await document_existance(target, Document('test', 1, ['a'], {}))
     # now write another document to check 'continuous=True'
-    source.write_sync({'_id': 'test2', '_rev': '1-b'})
-    await document_existance(target, {'_id': 'test2', '_rev': '1-b'})
+    source.write_sync(Document('test2', 1, ['b'], {}))
+    await document_existance(target, Document('test2', 1, ['b'], {}))
     # clean up
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -66,6 +66,6 @@ async def document_existance(db, doc):
     result = None
     while result != doc:
         try:
-            result = next(db.read_sync(doc['_id'], 'winner'))
+            result = next(db.read_sync(doc.id, 'winner'))
         except NotFound:
             await asyncio.sleep(0)
