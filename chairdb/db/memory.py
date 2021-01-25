@@ -2,20 +2,11 @@ import sortedcontainers
 
 import asyncio
 import uuid
-import typing
 
-from .datatypes import NotFound, Document
+from .datatypes import NotFound, Document, LocalDocument
 from .revtree import RevisionTree
 from .shared import (build_change, revs_diff, read_docs,
-                     ContinuousChangesMixin, update_doc, as_future_result)
-
-
-class DocumentInfo(typing.NamedTuple):
-    """An internal representation used as value in the 'by id' index."""
-
-    rev_tree: RevisionTree
-    winning_branch_idx: int
-    last_update_seq: int
+                     ContinuousChangesMixin, as_future_result)
 
 
 class SyncInMemoryDatabase:
@@ -28,7 +19,7 @@ class SyncInMemoryDatabase:
 
         # id -> document (dict)
         self._local = sortedcontainers.SortedDict()
-        # id -> DocumentInfo
+        # id -> (rev_tree, last_update_seq)
         self._byid = sortedcontainers.SortedDict()
         # seq -> id (str)
         self._byseq = sortedcontainers.SortedDict()
@@ -41,14 +32,14 @@ class SyncInMemoryDatabase:
         """
         for seq in self._byseq.irange(minimum=since, inclusive=(False, False)):
             id = self._byseq[seq]
-            rev_tree, winner, _ = self._byid[id]
-            yield build_change(id, seq, rev_tree, winner)
+            rev_tree, _ = self._byid[id]
+            yield build_change(id, seq, rev_tree)
 
     def revs_diff_sync(self, id, revs):
         try:
-            rev_tree = self._byid[id].rev_tree
+            rev_tree, _ = self._byid[id]
         except KeyError:
-            rev_tree = None
+            rev_tree = RevisionTree([])
         return revs_diff(id, revs, rev_tree)
 
     def write_sync(self, doc):
@@ -65,30 +56,32 @@ class SyncInMemoryDatabase:
 
     def _write_normal(self, doc):
         try:
-            tree, _, last_update_seq = self._byid[doc.id]
+            tree, last_update_seq = self._byid[doc.id]
         except KeyError:
-            tree = None
+            tree = RevisionTree([])
         else:
             # update the by seq index by first removing a previous reference to
             # the current document (if there is one), and then (later)
             # inserting a new one.
             del self._byseq[last_update_seq]
 
-        new_doc_info = update_doc(doc, tree, self.revs_limit_sync)
+        tree.merge_with_path(doc.rev_num, doc.path, doc.body,
+                             self.revs_limit_sync)
         self.update_seq_sync += 1
-        # actual insertion by updating the document info in the 'by id' index.
-        self._byid[doc.id] = DocumentInfo(*new_doc_info, self.update_seq_sync)
+        # actual insertion by updating the document info in the indices
+        self._byid[doc.id] = tree, self.update_seq_sync
         self._byseq[self.update_seq_sync] = doc.id
 
     def read_sync(self, id, revs):
         try:
-            if revs:
-                # find it using the 'by id' index
-                rev_tree, winner, _ = self._byid[id]
-                yield from read_docs(id, revs, rev_tree, winner)
-            else:
+            if revs == 'local':
                 # load from the _local key-value store
-                yield Document(id, body=self._local[id])
+                yield LocalDocument(id, body=self._local[id])
+            else:
+                # find it using the 'by id' index
+                rev_tree, _ = self._byid[id]
+                for branch in read_docs(id, revs, rev_tree):
+                    yield Document(id, *branch)
         except KeyError as e:
             raise NotFound(id) from e
 

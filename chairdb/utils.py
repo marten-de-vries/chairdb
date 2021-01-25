@@ -3,7 +3,7 @@ import ijson
 import contextlib
 import json
 
-from .db.datatypes import Document
+from .db.datatypes import Document, LocalDocument
 
 
 # JSON helpers
@@ -62,15 +62,17 @@ async def combine(iterable, aiterable):
 
 def couchdb_json_to_doc(json):
     id = json.pop('_id')
-    json.pop('_rev', None)  # for local docs
+    # default to None for local docs:
+    json.pop('_rev', None)
+    revs = json.pop('_revisions', None)
+    body = None if json.get('_deleted') else json
     if id.startswith('_local/'):
         id = id[len('_local/'):]
-        rev_num, path = 0, None
+        doc = LocalDocument(id, json)
     else:
-        revs = json.pop('_revisions')
         rev_num, path = revs['start'], revs['ids']
-    body = None if json.get('_deleted') else json
-    return Document(id, rev_num, path, body)
+        doc = Document(id, rev_num, path, body)
+    return doc
 
 
 def doc_to_couchdb_json(doc):

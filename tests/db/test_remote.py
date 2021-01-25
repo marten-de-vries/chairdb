@@ -5,7 +5,7 @@ from chairdb.utils import async_iter
 
 DOCS = [
     Document('mytest', 1, ['x'], {'Hello': 'World!'}),
-    Document('mytest', 2, ['y', 'x'])
+    Document('mytest', 2, ['y', 'x'], body=None)
 ]
 
 

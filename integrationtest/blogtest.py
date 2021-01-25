@@ -20,7 +20,8 @@ async def main():
     for doc in server_db.read_sync('roadside', 'all'):
         print(doc)
 
-    server_db.write_sync(Document('roadside', 3, ['b617', '6e05', '1a9c']))
+    server_db.write_sync(Document('roadside', 3, ['b617', '6e05', '1a9c'],
+                                  body=None))
     server_db.write_sync(Document('roadside', 3, ['5bd6', 'e3b0', '1a9c'],
                                   {'trees_count': 42}))
 

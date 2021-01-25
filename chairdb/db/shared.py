@@ -1,21 +1,16 @@
 import asyncio
 
-from .revtree import RevisionTree
-from .datatypes import Change, Missing, Document
+from .datatypes import Change, Missing
 
 
-def build_change(id, seq, rev_tree, winning_branch_idx):
-    winning_branch = rev_tree[winning_branch_idx]
-    deleted = winning_branch.leaf_doc_ptr is None
+def build_change(id, seq, rev_tree):
+    deleted = rev_tree.winner().leaf_doc_ptr is None
     leaf_revs = [rev_tuple(b, b.leaf_rev_num) for b in rev_tree.branches()]
     return Change(id, seq, deleted, leaf_revs)
 
 
 def revs_diff(id, revs, rev_tree):
-    if rev_tree:
-        revs_in_db = (rev_tuple(b, rn) for b, rn in rev_tree.all_revs())
-    else:
-        revs_in_db = ()
+    revs_in_db = (rev_tuple(b, rn) for b, rn in rev_tree.all_revs())
     return Missing(id, set(revs).difference(revs_in_db))
 
 
@@ -23,34 +18,18 @@ def rev_tuple(branch, rev_num):
     return rev_num, branch.path[branch.index(rev_num)]
 
 
-def read_docs(id, revs, rev_tree, winning_branch_idx):
+def read_docs(id, revs, rev_tree):
+    # ... walk the revision tree
     if revs == 'winner':
-        # winner information is passed in directly
-        branch = rev_tree[winning_branch_idx]
-        yield Document(id, *branch)
+        yield rev_tree.winner()
     else:
-        # ... walk the revision tree
-        yield from read_revs(id, revs, rev_tree)
-
-
-def read_revs(id, revs, rev_tree):
-    if revs == 'all':
-        # all leafs
-        for branch in rev_tree.branches():
-            yield Document(id, *branch)
-    else:
-        # search for specific revisions
-        for rev in revs:
-            for branch in rev_tree.find(*rev):
-                yield Document(id, *branch)
-
-
-def update_doc(doc, rev_tree, revs_limit):
-    if rev_tree is None:
-        rev_tree = RevisionTree([])  # new empty tree
-
-    rev_tree.merge_with_path(doc.rev_num, doc.path, doc.body, revs_limit)
-    return rev_tree, rev_tree.winner_idx()
+        if revs == 'all':
+            # all leafs
+            yield from rev_tree.branches()
+        else:
+            for rev in revs:
+                # search for specific revisions
+                yield from rev_tree.find(*rev)
 
 
 class ContinuousChangesMixin:

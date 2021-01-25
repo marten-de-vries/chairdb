@@ -59,7 +59,7 @@ class DBLoaderMiddleware:
 
     """
     def __init__(self, app):
-        self.app = app
+        self.db_app = app
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -71,7 +71,7 @@ class DBLoaderMiddleware:
                 response = JSONResp(DB_NOT_FOUND, 404)
                 await response(scope, receive, send)
                 return
-        await self.app(scope, receive, send)
+        await self.db_app(scope, receive, send)
 
 
 db_app = build_db_app(middleware=[Middleware(DBLoaderMiddleware)])

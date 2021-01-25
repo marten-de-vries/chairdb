@@ -1,5 +1,6 @@
 import pytest
-from chairdb import InMemoryDatabase, Change, NotFound, Document, Missing
+from chairdb import (InMemoryDatabase, Change, NotFound, Document, Missing,
+                     LocalDocument)
 from chairdb.utils import async_iter, to_list
 
 
@@ -69,7 +70,7 @@ def test_linear_history(db):
 
 def test_remove(db):
     insert_doc(db)
-    doc2 = Document('test', 2, ['b', 'a'])
+    doc2 = Document('test', 2, ['b', 'a'], body=None)
     db.write_sync(doc2)
     assert list(db.read_sync('test', 'winner')) == [doc2]
     assert list(db.changes_sync()) == [
@@ -113,7 +114,7 @@ def test_old_conflict(db):
     ]
 
     # remove current winner
-    db.write_sync(Document('test', 4, ['e', 'c', 'b', 'a']))
+    db.write_sync(Document('test', 4, ['e', 'c', 'b', 'a'], body=None))
 
     # check the winner is the 'old' leaf now.
     assert list(db.read_sync('test', 'winner')) == [
@@ -121,24 +122,24 @@ def test_old_conflict(db):
     ]
 
     # remove the remaining non-deleted leaf as well
-    db.write_sync(Document('test', 3, ['f', 'd', 'a']))
+    db.write_sync(Document('test', 3, ['f', 'd', 'a'], body=None))
 
     # check if the current winner is deleted - and has switched back again
     assert list(db.read_sync('test', 'winner')) == [
-        Document('test', 4, ['e', 'c', 'b', 'a']),
+        Document('test', 4, ['e', 'c', 'b', 'a'], body=None),
     ]
 
 
 def test_sync(db):
     # local documents
-    doc = Document('test', body={'hello': 'world!'})
+    doc = LocalDocument('test', body={'hello': 'world!'})
     db.write_sync(doc)
-    assert list(db.read_sync('test', None)) == [
+    assert list(db.read_sync('test', 'local')) == [
         doc
     ]
-    db.write_sync(Document('test', body=None))
+    db.write_sync(LocalDocument('test', body=None))
     with pytest.raises(NotFound):
-        next(db.read_sync('test', None))
+        next(db.read_sync('test', 'local'))
 
 
 @pytest.mark.asyncio
@@ -152,7 +153,7 @@ async def test_async(db):
     ]
     docs = [
         Document('mytest', 1, ['x'], {'Hello': 'World!'}),
-        Document('mytest', 2, ['y', 'x']),
+        Document('mytest', 2, ['y', 'x'], body=None),
         {}  # not a document
     ]
     result = await to_list(db.write(async_iter(docs)))
@@ -164,7 +165,7 @@ async def test_async(db):
         ('mytest', [(2, 'y')]),
     ]
     assert await to_list(db.read(async_iter(req))) == [
-        Document('mytest', 2, ['y', 'x']),
+        Document('mytest', 2, ['y', 'x'], body=None),
     ] * 3
     assert await to_list(db.changes()) == [
         Change('mytest', seq=2, deleted=True, leaf_revs=[(2, 'y')])

@@ -166,7 +166,7 @@ class HTTPDatabase(httpx.AsyncClient):
         tasks = set()
         async for id, revs in requested:
             params = self._read_params(id, revs)
-            if not revs:
+            if revs == 'local':
                 id = f'_local/{id}'
             docs = self._read_doc(id, revs, params)
 
@@ -179,7 +179,7 @@ class HTTPDatabase(httpx.AsyncClient):
         params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
             params['open_revs'] = 'all'
-        elif revs is not None and revs != 'winner':
+        elif revs != 'local' and revs != 'winner':
             params['open_revs'] = as_json([rev(*r) for r in revs])
         return params
 
@@ -195,7 +195,7 @@ class HTTPDatabase(httpx.AsyncClient):
                     yield NotFound(resp.json())
                 else:
                     assert resp.status_code == httpx.codes.OK
-                    yield resp.json()
+                    yield couchdb_json_to_doc(resp.json())
             else:
                 assert resp.status_code == httpx.codes.OK
                 async for doc in self._read_multipart(resp):

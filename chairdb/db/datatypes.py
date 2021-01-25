@@ -1,3 +1,4 @@
+import inspect
 import typing
 
 
@@ -31,20 +32,47 @@ class Missing(typing.NamedTuple):
     missing_revs: typing.List[str]
 
 
-class Document(typing.NamedTuple):
-    id: str
-    rev_num: int = 0
-    path: typing.Optional[typing.List[str]] = None
-    body: typing.Optional[dict] = None
+class AbstractDocument:
+    __slots__ = ('id', 'body')
+
+    def __init__(self, id, body):
+        self.id = id
+        self.body = body
 
     @property
     def deleted(self):
         return self.body is None
 
-    @property
-    def is_local(self):
-        return self.path is None
-
     # proxy
     def __getitem__(self, key):
         return self.body[key]
+
+    def __repr__(self):
+        args = ', '.join(f'{key}={repr(getattr(self, key))}'
+                         for key in self._keys())
+        return f'{type(self).__name__}({args})'
+
+    def _keys(self):
+        return inspect.signature(self.__init__).parameters.keys()
+
+    def __eq__(self, other):
+        return (
+            type(self) == type(other) and
+            all(getattr(self, k) == getattr(other, k) for k in self._keys())
+        )
+
+
+class LocalDocument(AbstractDocument):
+    __slots__ = ()
+    is_local = True
+
+
+class Document(AbstractDocument):
+    __slots__ = ('rev_num', 'path')
+    is_local = False
+
+    def __init__(self, id, rev_num, path, body):
+        super().__init__(id, body)
+
+        self.rev_num = rev_num
+        self.path = path

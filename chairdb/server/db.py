@@ -16,7 +16,7 @@ import uuid
 from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
                      parse_json_stream, rev, couchdb_json_to_doc,
                      doc_to_couchdb_json, parse_rev)
-from ..db.datatypes import NotFound
+from ..db.datatypes import LocalDocument, NotFound
 from ..db.shared import rev_tuple
 from .utils import JSONResp, parse_query_arg
 
@@ -122,7 +122,6 @@ def all_docs(request):
 
 
 def all_docs_stream(db):
-    # TODO: FIXME
     yield '{"offset":0,"rows":['
     total = 0
     for key, doc_info in db._byid.items():
@@ -186,7 +185,11 @@ async def parse_bulk_get_request(request):
         try:
             revs = [parse_rev(doc['rev']) for doc in docs]
         except KeyError:
-            revs = 'all'
+            if id.startswith('_local/'):
+                id = id[len('_local/'):]
+                revs = 'local'
+            else:
+                revs = 'all'
         yield id, revs
 
 
@@ -213,7 +216,7 @@ async def stream_bulk_get(db, req):
     yield ']}\n'
 
 
-class Document(HTTPEndpoint):
+class DocumentEndpoint(HTTPEndpoint):
     async def get(self, request):
         if not parse_query_arg(request, 'revs', default=False):
             print('revs=true not requested, but we do it anyway!')
@@ -221,7 +224,7 @@ class Document(HTTPEndpoint):
         doc_id = request.path_params['id']
         if doc_id.startswith('_local/'):
             doc_id = doc_id[len('_local/'):]
-            revs = None
+            revs = 'local'
         else:
             revs = self._parse_revs(request)
 
@@ -275,7 +278,7 @@ class Document(HTTPEndpoint):
         doc_id = request.path_params['id']
         assert doc_id.startswith('_local/')
 
-        docs = async_iter([Document(doc_id)])
+        docs = async_iter([LocalDocument(doc_id, body=None)])
         try:
             await get_db(request).write(docs).__anext__()
         except StopAsyncIteration:
@@ -303,5 +306,5 @@ def build_db_app(**opts):
         Route('/_bulk_docs', bulk_docs, methods=['POST']),
         Route('/_local_docs', local_docs),
         Route('/_bulk_get', bulk_get, methods=['POST']),
-        Route('/{id:path}', Document),
+        Route('/{id:path}', DocumentEndpoint),
     ], **opts)

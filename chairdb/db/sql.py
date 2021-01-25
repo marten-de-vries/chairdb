@@ -2,44 +2,53 @@ import asyncio
 import json
 
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
-                     build_change, update_doc, read_docs)
+                     build_change, read_docs)
 from .revtree import RevisionTree, Branch
-from .datatypes import NotFound, Document
+from .datatypes import NotFound, Document, LocalDocument
 from ..utils import as_json
 
 TABLE_CREATE = [
-    """CREATE TABLE documents (
+    """CREATE TABLE revision_trees (
         seq INTEGER PRIMARY KEY,
         id STRING,
-        rev_tree JSON,
-        winning_branch_idx INTEGER
+        rev_tree JSON
     )""",
-    "CREATE UNIQUE INDEX idx_id ON documents (id)",
+    """CREATE TABLE blobs (
+        id INTEGER PRIMARY KEY,
+        data BLOB
+    )""",
+    "CREATE UNIQUE INDEX idx_id ON revision_trees (id)",
     """CREATE TABLE local_documents (
         id STRING PRIMARY KEY,
         document JSON
     )""",
 ]
 
-UPDATE_SEQ = "SELECT max(seq) AS update_seq from documents"
+UPDATE_SEQ = "SELECT max(seq) AS update_seq from revision_trees"
 
-CHANGES = """SELECT seq, id, rev_tree, winning_branch_idx FROM documents
+CHANGES = """SELECT seq, id, rev_tree FROM revision_trees
 WHERE seq > :since
 ORDER BY seq"""
 
-TREE_ONLY = "SELECT rev_tree FROM documents WHERE id=:id"
+# default value of '[]'
+TREE_OR_NEW = """SELECT IFNULL(MAX(rev_tree), '[]')
+FROM revision_trees WHERE id=:id"""
 
 WRITE_LOCAL = "INSERT INTO local_documents VALUES (:id, :document)"
 
-WRITE = """INSERT OR REPLACE INTO documents
-VALUES (NULL, :id, :rev_tree, :winner)"""
+WRITE = """INSERT OR REPLACE INTO revision_trees
+VALUES (NULL, :id, :rev_tree)"""
+
+WRITE_BLOB = "INSERT INTO blobs VALUES (NULL, :data)"
+DELETE_BLOB = "DELETE FROM blobs WHERE id=:id"
+READ_BLOB = "SELECT data FROM blobs WHERE id=:id"
 
 READ_LOCAL = "SELECT document FROM local_documents WHERE id=:id"
 
-READ = "SELECT rev_tree, winning_branch_idx FROM documents WHERE id=:id"
+READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 
 
-# TODO: serialize/deserialize json + error handling
+# TODO: error handling
 class SQLDatabase(ContinuousChangesMixin):
     def __init__(self, db):
         self._db = db
@@ -68,18 +77,17 @@ class SQLDatabase(ContinuousChangesMixin):
     async def _changes(self, since=None):
         rows = await self._db.fetch_all(query=CHANGES,
                                         values={'since': since or 0})
-        for seq, id, tree, winning_branch_idx in rows:
+        for seq, id, tree in rows:
             rev_tree = self._decode_tree(tree)
-            yield build_change(id, seq, rev_tree, winning_branch_idx)
+            yield build_change(id, seq, rev_tree)
 
     async def revs_diff(self, remote):
         async for id, revs in remote:
             yield revs_diff(id, revs, await self._revs_tree(id))
 
     async def _revs_tree(self, id):
-        tree = await self._db.fetch_one(query=TREE_ONLY, values={'id': id})
-        if tree:
-            return self._decode_tree(tree[0])
+        tree = await self._db.fetch_one(query=TREE_OR_NEW, values={'id': id})
+        return self._decode_tree(tree[0])
 
     def _decode_tree(self, data):
         return RevisionTree([Branch(*branch) for branch in json.loads(data)])
@@ -96,30 +104,44 @@ class SQLDatabase(ContinuousChangesMixin):
                     yield exc
 
     async def _write_doc(self, doc):
+        # insert blob
+        ptr = doc.body
+        if ptr:
+            value = {'data': as_json(doc.body)}
+            ptr = await self._db.execute(WRITE_BLOB, value)
+
         tree = await self._revs_tree(doc.id)
         # TODO: non-fixed revs limit
-        new_tree, winner = update_doc(doc, tree, revs_limit=1000)
-        values = {'id': doc.id, 'rev_tree': as_json(new_tree),
-                  'winner': winner}
+        old_ptr = tree.merge_with_path(doc.rev_num, doc.path, ptr, 1000)
+        await self._db.execute(DELETE_BLOB, {'id': old_ptr})
+        values = {'id': doc.id, 'rev_tree': as_json(tree)}
         await self._db.execute(WRITE, values)
         self._update_event.set()
         self._update_event.clear()
 
     async def read(self, requested):
         async for id, revs in requested:
-            if revs:
-                values = {'id': id}
-                tree, winner = await self._db.fetch_one(READ, values)
-                rev_tree = self._decode_tree(tree)
-                for doc in read_docs(id, revs, rev_tree, winner):
-                    yield doc
+            if revs == 'local':
+                yield await self._read_local(id)
             else:
-                base = await self._db.fetch_one(query=READ_LOCAL,
-                                                values={'id': id})
-                if base:
-                    yield Document(id, body=json.loads(base[0]))
-                else:
-                    yield NotFound(id)
+                raw_tree = await self._db.fetch_one(READ, {'id': id})
+                rev_tree = self._decode_tree(raw_tree[0])
+                for branch in read_docs(id, revs, rev_tree):
+                    body = branch.leaf_doc_ptr
+                    if body is not None:
+                        body = await self._fetch_body(READ_BLOB, body)
+                    yield Document(id, branch.leaf_rev_num, branch.path, body)
+
+    async def _read_local(self, id):
+        try:
+            body = await self._fetch_body(READ_LOCAL, id)
+            return LocalDocument(id, body)
+        except TypeError:
+            return NotFound(id)
+
+    async def _fetch_body(self, query, id):
+        raw_result = await self._db.fetch_one(query, values={'id': id})
+        return json.loads(raw_result[0])
 
     async def ensure_full_commit(self):
         # no-op, all writes are immediately committed

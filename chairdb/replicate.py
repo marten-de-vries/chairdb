@@ -2,7 +2,7 @@ import email.utils
 import hashlib
 import uuid
 
-from .db.datatypes import NotFound, Document
+from .db.datatypes import NotFound, LocalDocument
 from .utils import async_iter, to_list
 
 REPLICATION_ID_VERSION = 1
@@ -34,7 +34,7 @@ async def replicate(source, target, create_target=False, continuous=False):
                                        continuous)
 
     # - 2.4.2.3.2. Retrieve Replication Logs from Source and Target
-    log_request = [(replication_id, None)]
+    log_request = [(replication_id, 'local')]
     source_log = await source.read(async_iter(log_request)).__anext__()
     target_log = await target.read(async_iter(log_request)).__anext__()
 
@@ -57,6 +57,7 @@ async def replicate(source, target, create_target=False, continuous=False):
 
     # - 2.4.2.5.2. Upload Batch of Changed Documents
     async for error in target.write(write_input):
+        print(error)
         # - 2.4.2.5.3 TODO (attachments)
         hist_entry['doc_write_failures'] += 1
 
@@ -74,10 +75,10 @@ async def replicate(source, target, create_target=False, continuous=False):
         'source_last_seq': hist_entry['recorded_seq'],
     }
     if hist_entry['recorded_seq'] != startup_checkpoint:
-        new_source_log = Document(replication_id, body={
+        new_source_log = LocalDocument(replication_id, body={
             'history': build_history(source_log, hist_entry), **new_log_shared
         })
-        new_target_log = Document(replication_id, body={
+        new_target_log = LocalDocument(replication_id, body={
             'history': build_history(target_log, hist_entry), **new_log_shared
         })
 
