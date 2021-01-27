@@ -9,7 +9,7 @@ class Branch(typing.NamedTuple):
     """
     leaf_rev_num: int
     path: list
-    leaf_doc_ptr: typing.Optional[dict]
+    leaf_doc_ptr: typing.Optional[typing.Any]
 
     def index(self, rev_num):
         """Convert a revision number to a Branch.path index"""

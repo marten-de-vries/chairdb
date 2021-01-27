@@ -3,7 +3,7 @@ import ijson
 import contextlib
 import json
 
-from .db.datatypes import Document, LocalDocument
+from .db.datatypes import Document, AbstractDocument
 
 
 # JSON helpers
@@ -20,6 +20,24 @@ async def parse_json_stream(stream, type, prefix):
         for result in results:
             yield result
         results.clear()
+
+
+async def json_array_inner(header, iterator, gen_footer):
+    text = header
+    async for i, item in aenumerate(iterator):
+        if i > 0:
+            yield text
+            text = f',\n{item}'
+        else:
+            text = f'{text}{item}'
+    yield f'{text}{gen_footer()}'
+
+
+async def json_object_inner(header, iterator, gen_footer):
+    generator_exp = (f'{key}:{value}' async for key, value in iterator)
+    async for json_part in json_array_inner(header, generator_exp, gen_footer):
+        # json array and a json object are both comma separated
+        yield json_part
 
 
 # async helpers
@@ -60,15 +78,23 @@ async def combine(iterable, aiterable):
 
 # couchdb helpers
 
-def couchdb_json_to_doc(json):
-    id = json.pop('_id')
+class LocalDocument(AbstractDocument):
+    pass
+
+
+def couchdb_json_to_doc(json, id=None):
+    """Returns a (local_id, document) tuple. local_id is only defined for local
+    documents
+
+    """
+    id = json.pop('_id', id)
     # default to None for local docs:
     json.pop('_rev', None)
     revs = json.pop('_revisions', None)
     body = None if json.get('_deleted') else json
     if id.startswith('_local/'):
         id = id[len('_local/'):]
-        doc = LocalDocument(id, json)
+        doc = LocalDocument(id, body)
     else:
         rev_num, path = revs['start'], revs['ids']
         doc = Document(id, rev_num, path, body)
@@ -76,11 +102,12 @@ def couchdb_json_to_doc(json):
 
 
 def doc_to_couchdb_json(doc):
-    if doc.is_local:
-        json = {'_id': f'_local/{doc.id}'}
+    if isinstance(doc, LocalDocument):
+        json = {'_id': f'_local/{doc.id}', '_rev': rev(0, '1')}
     else:
+        r = rev(doc.rev_num, doc.path[0])
         revs = {'start': doc.rev_num, 'ids': doc.path}
-        json = {'_id': doc.id, '_revisions': revs}
+        json = {'_id': doc.id, '_rev': r, '_revisions': revs}
     if doc.deleted:
         json['_deleted'] = True
     else:

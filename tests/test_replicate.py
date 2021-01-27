@@ -18,7 +18,7 @@ async def sql_target():
 
 
 @pytest.mark.asyncio
-async def test_replicate(sql_target):
+async def test_replicate_multi(sql_target):
     # guarantee stable replication id
     target = InMemoryDatabase(id='test')
     async with HTTPDatabase('http://localhost:5984/brassbandwirdum',

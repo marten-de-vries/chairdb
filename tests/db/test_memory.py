@@ -1,6 +1,5 @@
 import pytest
-from chairdb import (InMemoryDatabase, Change, NotFound, Document, Missing,
-                     LocalDocument)
+from chairdb import InMemoryDatabase, Change, NotFound, Document, Missing
 from chairdb.utils import async_iter, to_list
 
 
@@ -132,14 +131,11 @@ def test_old_conflict(db):
 
 def test_sync(db):
     # local documents
-    doc = LocalDocument('test', body={'hello': 'world!'})
-    db.write_sync(doc)
-    assert list(db.read_sync('test', 'local')) == [
-        doc
-    ]
-    db.write_sync(LocalDocument('test', body=None))
-    with pytest.raises(NotFound):
-        next(db.read_sync('test', 'local'))
+    doc = {'hello': 'world!'}
+    db.write_local_sync('test', doc)
+    assert db.read_local_sync('test') == doc
+    db.write_local_sync('test', None)
+    assert db.read_local_sync('test') is None
 
 
 @pytest.mark.asyncio

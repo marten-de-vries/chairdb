@@ -41,6 +41,8 @@ class AbstractDocument:
 
     @property
     def deleted(self):
+        # TODO: consider how doc.deleted relates to NotFound. Also for local
+        # docs
         return self.body is None
 
     # proxy
@@ -62,14 +64,8 @@ class AbstractDocument:
         )
 
 
-class LocalDocument(AbstractDocument):
-    __slots__ = ()
-    is_local = True
-
-
 class Document(AbstractDocument):
     __slots__ = ('rev_num', 'path')
-    is_local = False
 
     def __init__(self, id, rev_num, path, body):
         super().__init__(id, body)

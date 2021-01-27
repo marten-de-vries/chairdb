@@ -1,10 +1,10 @@
-import asyncio
+import contextlib
 import json
 
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
                      build_change, read_docs)
 from .revtree import RevisionTree, Branch
-from .datatypes import NotFound, Document, LocalDocument
+from .datatypes import Document
 from ..utils import as_json
 
 TABLE_CREATE = [
@@ -52,7 +52,6 @@ READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 class SQLDatabase(ContinuousChangesMixin):
     def __init__(self, db):
         self._db = db
-        self._update_event = asyncio.Event()
 
     async def __aenter__(self):
         for query in TABLE_CREATE:
@@ -94,14 +93,14 @@ class SQLDatabase(ContinuousChangesMixin):
 
     async def write(self, docs):
         async for doc in docs:
-            if doc.is_local:
-                values = {'id': doc.id, 'document': as_json(doc.body)}
-                await self._db.execute(WRITE_LOCAL, values)
-            else:
-                try:
-                    await self._write_doc(doc)
-                except Exception as exc:
-                    yield exc
+            try:
+                await self._write_doc(doc)
+            except Exception as exc:
+                yield exc
+
+    async def write_local(self, id, doc):
+        values = {'id': id, 'document': as_json(doc)}
+        await self._db.execute(WRITE_LOCAL, values)
 
     async def _write_doc(self, doc):
         # insert blob
@@ -116,28 +115,22 @@ class SQLDatabase(ContinuousChangesMixin):
         await self._db.execute(DELETE_BLOB, {'id': old_ptr})
         values = {'id': doc.id, 'rev_tree': as_json(tree)}
         await self._db.execute(WRITE, values)
-        self._update_event.set()
-        self._update_event.clear()
+
+        self._updated()
+
+    async def read_local(self, id):
+        with contextlib.suppress(TypeError):
+            return await self._fetch_body(READ_LOCAL, id)
 
     async def read(self, requested):
         async for id, revs in requested:
-            if revs == 'local':
-                yield await self._read_local(id)
-            else:
-                raw_tree = await self._db.fetch_one(READ, {'id': id})
-                rev_tree = self._decode_tree(raw_tree[0])
-                for branch in read_docs(id, revs, rev_tree):
-                    body = branch.leaf_doc_ptr
-                    if body is not None:
-                        body = await self._fetch_body(READ_BLOB, body)
-                    yield Document(id, branch.leaf_rev_num, branch.path, body)
-
-    async def _read_local(self, id):
-        try:
-            body = await self._fetch_body(READ_LOCAL, id)
-            return LocalDocument(id, body)
-        except TypeError:
-            return NotFound(id)
+            raw_tree = await self._db.fetch_one(READ, {'id': id})
+            rev_tree = self._decode_tree(raw_tree[0])
+            for branch in read_docs(id, revs, rev_tree):
+                body = branch.leaf_doc_ptr
+                if body is not None:
+                    body = await self._fetch_body(READ_BLOB, body)
+                yield Document(id, branch.leaf_rev_num, branch.path, body)
 
     async def _fetch_body(self, query, id):
         raw_result = await self._db.fetch_one(query, values={'id': id})

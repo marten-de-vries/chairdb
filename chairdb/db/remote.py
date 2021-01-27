@@ -6,8 +6,9 @@ import json
 
 from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from .multipart import MultipartResponseParser
-from ..utils import (as_json, parse_json_stream, aenumerate, parse_rev, rev,
-                     couchdb_json_to_doc, doc_to_couchdb_json)
+from ..utils import (as_json, parse_json_stream, parse_rev, json_array_inner,
+                     rev, couchdb_json_to_doc, doc_to_couchdb_json,
+                     json_object_inner)
 
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}
@@ -99,7 +100,8 @@ class HTTPDatabase(httpx.AsyncClient):
                 yield obj
 
     async def revs_diff(self, remote):
-        body = self._revs_diff_body(remote)
+        items = self._revs_diff_json(remote)
+        body = self._encode_aiter(json_object_inner('{', items, lambda: '}\n'))
         async with self._stream('POST', '/_revs_diff', data=body,
                                 headers=JSON_REQ_HEADERS) as resp:
             assert resp.status_code == httpx.codes.OK
@@ -108,35 +110,32 @@ class HTTPDatabase(httpx.AsyncClient):
                                                     'kvitems', ''):
                 yield Missing(id, [parse_rev(r) for r in info['missing']])
 
-    async def _revs_diff_body(self, remote):
-        yield b'{'
-        async for i, (id, revs) in aenumerate(remote):
-            if i > 0:
-                yield b','
-            yield as_json(id).encode('UTF-8')
-            yield b':'
-            yield as_json([rev(*r) for r in revs]).encode('UTF-8')
-        yield b'}\n'
+    async def _revs_diff_json(self, remote):
+        async for id, revs in remote:
+            yield as_json(id), as_json([rev(*r) for r in revs])
+
+    async def _encode_aiter(self, aiterable):
+        async for part in aiterable:
+            yield part.encode('UTF-8')
 
     async def write(self, docs):
-        body = self._bulk_docs_body(docs)
-        async with self._stream('POST', '/_bulk_docs', data=body,
+        header = '{"new_edits":false,"docs":['
+        docs_json = self._bulk_docs_json(docs)
+        body = json_array_inner(header, docs_json, lambda: ']}\n')
+        body_bytes = self._encode_aiter(body)
+        async with self._stream('POST', '/_bulk_docs', data=body_bytes,
                                 headers=JSON_REQ_HEADERS) as resp:
-            if resp.status_code != httpx.codes.CREATED:
-                await resp.aread()
-                assert resp.status_code == httpx.codes.CREATED
+            assert resp.status_code == httpx.codes.CREATED
             async for row in parse_json_stream(resp.aiter_bytes(), 'items',
                                                'item'):
                 yield row
 
-    async def _bulk_docs_body(self, docs):
-        yield b'{"new_edits":false,"docs":['
-        async for i, doc in aenumerate(docs):
-            if i > 0:
-                yield b','
-            json = doc_to_couchdb_json(doc)
-            yield as_json(json).encode('UTF-8')
-        yield b']}'
+    async def _bulk_docs_json(self, docs):
+        async for doc in docs:
+            yield as_json(doc_to_couchdb_json(doc))
+
+    async def write_local(self, id, doc):
+        await self._request('PUT', f'/_local/{id}', json=doc)
 
     async def read(self, requested):
         # the method for reading the docs in parallel is inspired by:
@@ -166,9 +165,7 @@ class HTTPDatabase(httpx.AsyncClient):
         tasks = set()
         async for id, revs in requested:
             params = self._read_params(id, revs)
-            if revs == 'local':
-                id = f'_local/{id}'
-            docs = self._read_doc(id, revs, params)
+            docs = self._read_doc(id, params)
 
             tasks.add(asyncio.create_task(self._drain_into(docs, queue)))
             while len(tasks) >= MAX_PARALLEL_READS:
@@ -179,7 +176,7 @@ class HTTPDatabase(httpx.AsyncClient):
         params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
             params['open_revs'] = 'all'
-        elif revs != 'local' and revs != 'winner':
+        elif revs != 'winner':
             params['open_revs'] = as_json([rev(*r) for r in revs])
         return params
 
@@ -187,7 +184,7 @@ class HTTPDatabase(httpx.AsyncClient):
         async for doc in docs:
             await queue.put(doc)
 
-    async def _read_doc(self, id, revs, params):
+    async def _read_doc(self, id, params):
         async with self._stream('GET', '/' + id, params=params) as resp:
             if resp.headers['Content-Type'] == 'application/json':
                 await resp.aread()
@@ -215,6 +212,10 @@ class HTTPDatabase(httpx.AsyncClient):
             else:
                 assert part.headers == {'Content-Type': 'application/json'}
                 yield couchdb_json_to_doc(json.loads(await part.aread()))
+
+    async def read_local(self, id):
+        doc = await self._read_doc('_local/' + id, {}).__anext__()
+        return doc.body
 
     async def ensure_full_commit(self):
         await self._request('POST', '_ensure_full_commit')

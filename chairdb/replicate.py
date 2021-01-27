@@ -2,8 +2,7 @@ import email.utils
 import hashlib
 import uuid
 
-from .db.datatypes import NotFound, LocalDocument
-from .utils import async_iter, to_list
+from .db.datatypes import NotFound
 
 REPLICATION_ID_VERSION = 1
 
@@ -34,9 +33,8 @@ async def replicate(source, target, create_target=False, continuous=False):
                                        continuous)
 
     # - 2.4.2.3.2. Retrieve Replication Logs from Source and Target
-    log_request = [(replication_id, 'local')]
-    source_log = await source.read(async_iter(log_request)).__anext__()
-    target_log = await target.read(async_iter(log_request)).__anext__()
+    source_log = await source.read_local(replication_id)
+    target_log = await target.read_local(replication_id)
 
     # - 2.4.2.3.3. Compare Replication Logs
     startup_checkpoint = compare_replication_logs(source_log, target_log)
@@ -75,15 +73,15 @@ async def replicate(source, target, create_target=False, continuous=False):
         'source_last_seq': hist_entry['recorded_seq'],
     }
     if hist_entry['recorded_seq'] != startup_checkpoint:
-        new_source_log = LocalDocument(replication_id, body={
+        new_source_log = {
             'history': build_history(source_log, hist_entry), **new_log_shared
-        })
-        new_target_log = LocalDocument(replication_id, body={
+        }
+        new_target_log = {
             'history': build_history(target_log, hist_entry), **new_log_shared
-        })
+        }
 
-        await to_list(source.write(async_iter([new_source_log])))
-        await to_list(target.write(async_iter([new_target_log])))
+        await source.write_local(replication_id, new_source_log)
+        await target.write_local(replication_id, new_target_log)
 
     # - 2.4.2.4.4. Replication Completed
     return {
@@ -125,8 +123,7 @@ def compare_replication_logs(source, target):
     # 2.4.2.3.3. Compare Replication Logs
     no_checkpoint = (
         # because there is no record of a previous replication
-        isinstance(source, NotFound) or
-        isinstance(target, NotFound) or
+        source is None or target is None or
         # or because said replication happened under different (possibly buggy)
         # conditions
         source['replication_id_version'] != REPLICATION_ID_VERSION or

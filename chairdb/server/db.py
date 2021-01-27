@@ -11,14 +11,20 @@ from starlette.endpoints import HTTPEndpoint
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
+import asyncio
+import functools
+import logging
 import uuid
 
-from ..utils import (async_iter, to_list, aenumerate, peek, as_json,
-                     parse_json_stream, rev, couchdb_json_to_doc,
-                     doc_to_couchdb_json, parse_rev)
-from ..db.datatypes import LocalDocument, NotFound
+from ..utils import (async_iter, peek, as_json, json_object_inner,
+                     parse_json_stream, rev, couchdb_json_to_doc, parse_rev,
+                     doc_to_couchdb_json, json_array_inner, LocalDocument,
+                     combine)
+from ..db.datatypes import NotFound
 from ..db.shared import rev_tuple
 from .utils import JSONResp, parse_query_arg
+
+logger = logging.getLogger(__name__)
 
 FULL_COMMIT = {
     'instance_start_time': "0",
@@ -49,9 +55,10 @@ class Database(HTTPEndpoint):
         raise NotImplementedError()
 
 
+# changes
 def changes(request):
     if parse_query_arg(request, 'style', default='main_only') != 'all_docs':
-        print('style =/= all_docs, but we do that anyway!')
+        logger.warn('style =/= all_docs, but we do that anyway!')
     since = int(parse_query_arg(request, 'since', default=0))
     feed = parse_query_arg(request, 'feed', default='normal')
     continuous = feed == 'continuous'
@@ -77,22 +84,30 @@ def change_row_json(change):
     return as_json(row)
 
 
-async def stream_changes(changes):
-    yield '{"results": [\n'
-    last_seq = 0
+def stream_changes(changes):
+    info = {'last_seq': 0}
+    changes = json_changes_and_last_seq(changes, info)
+    gen_changes_footer = functools.partial(changes_footer, info)
+    return json_array_inner('{"results": [\n', changes, gen_changes_footer)
 
-    async for i, change in aenumerate(changes):
-        if i > 0:
-            yield ',\n'
+
+async def json_changes_and_last_seq(changes, store):
+    async for change in changes:
         yield change_row_json(change)
-        last_seq = change.seq
-    yield f'\n], "last_seq": {last_seq}, "pending": 0}}\n'
+        store['last_seq'] = change.seq
 
 
-async def revs_diff(request):
+def changes_footer(info):
+    return f'\n], "last_seq": {info["last_seq"]}, "pending": 0}}\n'
+
+
+# revs diff
+def revs_diff(request):
     remote = parse_json_stream(request.stream(), 'kvitems', '')
-    generator = stream_revs_diff(get_db(request), parse_revs(remote))
-    return StreamingResponse(generator, media_type='application/json')
+    remote_parsed = parse_revs(remote)
+    result = get_db(request).revs_diff(remote_parsed)
+    gen = json_object_inner('{', revs_diff_json_items(result), lambda: '}\n')
+    return StreamingResponse(gen, media_type='application/json')
 
 
 async def parse_revs(data):
@@ -100,97 +115,102 @@ async def parse_revs(data):
         yield id, [parse_rev(r) for r in revs]
 
 
-async def stream_revs_diff(db, remote):
-    yield '{'
-    result = db.revs_diff(remote)
-    async for i, missing in aenumerate(result):
-        if i > 0:
-            yield ','
+async def revs_diff_json_items(result):
+    async for missing in result:
         revs = [rev(*r) for r in missing.missing_revs]
-        yield f'{as_json(missing.id)}:{as_json({"missing": revs})}'
-    yield '}\n'
+        yield as_json(missing.id), as_json({"missing": revs})
 
 
+# ensure full commit
 async def ensure_full_commit(request):
     await get_db(request).ensure_full_commit()
     return JSONResp(FULL_COMMIT, 201)
 
 
+# all docs: rewrite later
 def all_docs(request):
-    generator = all_docs_stream(get_db(request))
+    info = {'total_rows': 0}
+    items = all_docs_json(get_db(request), info)
+    gen_footer = functools.partial(all_docs_footer, info)
+    generator = json_array_inner('{"offset":0,"rows":[', items, gen_footer)
+
     return StreamingResponse(generator, media_type='application/json')
 
 
-def all_docs_stream(db):
-    yield '{"offset":0,"rows":['
-    total = 0
+async def all_docs_json(db, store):
     for key, doc_info in db._byid.items():
         branch = doc_info.rev_tree[doc_info.winning_branch_idx]
         if branch.leaf_doc_ptr:
-            if total != 0:
-                yield ','
             r = rev(*rev_tuple(branch, branch.leaf_rev_num))
             yield as_json({'id': key, 'key': key, 'value': {'rev': r}})
-            total += 1
-    yield f'],"total_rows":{total}}}\n'
+            store['total_rows'] += 1
 
 
+def all_docs_footer(info):
+    return f'],"total_rows":{info["total_rows"]}}}\n'
+
+
+# bulk docs
 async def bulk_docs(request):
     req = await request.json()
     assert not req.get('new_edits', True)
-    docs = [couchdb_json_to_doc(json) for json in req['docs']]
-    generator = bulk_docs_stream(get_db(request), docs)
+
+    json_results = write_all(get_db(request), req['docs'])
+    generator = json_array_inner('[', json_results, lambda: ']\n')
     return StreamingResponse(generator, 201, media_type='application/json')
 
 
-async def bulk_docs_stream(db, req):
-    yield '['
-    result = db.write(async_iter(req))
-    async for i, error in aenumerate(result):
-        if i > 0:
-            yield ','
-        yield as_json(error)  # crash likely
-    yield ']\n'
+async def write_all(db, docs):
+    writes = []
+    for json in docs:
+        doc = couchdb_json_to_doc(json)
+        if isinstance(doc, LocalDocument):
+            await db.write_local(doc.id, doc.body)
+        else:
+            writes.append(doc)
+    async for result in db.write(async_iter(writes)):
+        yield as_json(result)
 
 
+# local docs
 def local_docs(request):
-    generator = stream_local_docs(get_db(request))
+    docs_json = local_docs_json(get_db(request))
+    generator = json_array_inner('{"rows": [', docs_json, lambda: ']}\n')
     return StreamingResponse(generator, media_type='application/json')
 
 
-def stream_local_docs(db):
-    yield '{"rows": ['
-    for i, id in enumerate(db._local.keys()):
-        if i > 0:
-            yield ','
+async def local_docs_json(db):
+    for id in db._local.keys():
         full_id = f"_local/{id}"
         yield as_json({
             'id': full_id,
             'key': full_id,
             'value': {'rev': '0-1'},
         })
-    yield ']}\n'
 
 
-async def bulk_get(request):
+# bulk get
+def bulk_get(request):
     if not parse_query_arg(request, 'revs', default=False):
-        print('revs=true not requested, but we do it anyway!')
-    req = parse_bulk_get_request(request)
-    generator = stream_bulk_get(get_db(request), req)
+        logger.warn('revs=true not requested, but we do it anyway!')
+    local_docs = []
+    req = parse_bulk_get_request(request, local_docs)
+    results = bulk_get_json(get_db(request), req, local_docs)
+
+    generator = json_array_inner('{"results": [', results, lambda: ']}\n')
     return StreamingResponse(generator, media_type='application/json')
 
 
-async def parse_bulk_get_request(request):
+async def parse_bulk_get_request(request, local_docs):
     async for id, docs in group_by(request.stream(), key=lambda d: d['id']):
-        try:
-            revs = [parse_rev(doc['rev']) for doc in docs]
-        except KeyError:
-            if id.startswith('_local/'):
-                id = id[len('_local/'):]
-                revs = 'local'
-            else:
+        if id.startswith('_local/'):
+            local_docs.append(id[len('_local/'):])
+        else:
+            try:
+                revs = [parse_rev(doc['rev']) for doc in docs]
+            except KeyError:
                 revs = 'all'
-        yield id, revs
+            yield id, revs
 
 
 async def group_by(stream, key):
@@ -208,27 +228,29 @@ async def group_by(stream, key):
     yield last_key, docs
 
 
-async def stream_bulk_get(db, req):
-    yield '{"results": ['
-    async for i, doc in aenumerate(db.read(req)):
+async def bulk_get_json(db, req, local_docs):
+    local_reads = (db.read_local(doc) for doc in local_docs)
+    local_results = await asyncio.gather(local_reads)
+    # TODO: something more gradual maybe?
+    async for doc in combine(local_results, db.read(req)):
         json = doc_to_couchdb_json(doc)
         yield as_json({'docs': [{'ok': json}], 'id': doc.id})
-    yield ']}\n'
 
 
+# /doc
 class DocumentEndpoint(HTTPEndpoint):
     async def get(self, request):
-        if not parse_query_arg(request, 'revs', default=False):
-            print('revs=true not requested, but we do it anyway!')
-
+        db = get_db(request)
         doc_id = request.path_params['id']
         if doc_id.startswith('_local/'):
-            doc_id = doc_id[len('_local/'):]
-            revs = 'local'
+            local_id = doc_id[len('_local/'):]
+            doc = await db.read_local(local_id)
+            resp = async_iter([LocalDocument(local_id, doc)])
         else:
             revs = self._parse_revs(request)
-
-        resp = get_db(request).read(async_iter([(doc_id, revs)]))
+            resp = db.read(async_iter([(doc_id, revs)]))
+            if not parse_query_arg(request, 'revs', default=False):
+                logger.warn('revs=true not requested, but we do it anyway!')
 
         first_two, resp_orig = await peek(resp, n=2)
         if isinstance(first_two[0], NotFound):
@@ -242,7 +264,7 @@ class DocumentEndpoint(HTTPEndpoint):
             generator = self._multipart_response(resp_orig, boundary)
             return StreamingResponse(generator, media_type=mt)
         else:
-            return JSONResp(first_two[0])
+            return JSONResp(doc_to_couchdb_json(first_two[0]))
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -254,7 +276,7 @@ class DocumentEndpoint(HTTPEndpoint):
                 revs = [rev]
         if revs not in ['winner', 'all']:
             if not parse_query_arg(request, 'latest'):
-                print('latest=true not requested, but we do it anyway!')
+                logger.warn('latest=true not requested, but we do it anyway!')
             revs = [parse_rev(r) for r in revs]
         return revs
 
@@ -268,23 +290,18 @@ class DocumentEndpoint(HTTPEndpoint):
         doc_id = request.path_params['id']
         if not doc_id.startswith('_local/'):
             return JSONResp(DOC_NOT_FOUND, 404)  # FIXME
+        doc = couchdb_json_to_doc(await request.json(), doc_id)
 
-        doc = couchdb_json_to_doc(await request.json())
+        await get_db(request).write_local(doc.id, doc.body)
 
-        await to_list(get_db(request).write(async_iter([doc])))
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 
     async def delete(self, request):
         doc_id = request.path_params['id']
         assert doc_id.startswith('_local/')
 
-        docs = async_iter([LocalDocument(doc_id, body=None)])
-        try:
-            await get_db(request).write(docs).__anext__()
-        except StopAsyncIteration:
-            return JSONResp({'id': doc_id, 'ok': True, 'rev': '0-1'})
-        else:
-            return JSONResp(DOC_NOT_FOUND, 404)
+        await get_db(request).write_local(doc_id[len('_local/'):], None)
+        return JSONResp({'id': doc_id, 'ok': True, 'rev': '0-1'})
 
     def copy(sef, request):
         raise NotImplementedError()
