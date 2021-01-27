@@ -21,7 +21,6 @@ from ..utils import (async_iter, peek, as_json, json_object_inner,
                      doc_to_couchdb_json, json_array_inner, LocalDocument,
                      combine)
 from ..db.datatypes import NotFound
-from ..db.shared import rev_tuple
 from .utils import JSONResp, parse_query_arg
 
 logger = logging.getLogger(__name__)
@@ -118,7 +117,9 @@ async def parse_revs(data):
 async def revs_diff_json_items(result):
     async for missing in result:
         revs = [rev(*r) for r in missing.missing_revs]
-        yield as_json(missing.id), as_json({"missing": revs})
+        pa = [rev(*r) for r in missing.possible_ancestors]
+        value = {"missing": revs, "possible_ancestors": pa}
+        yield as_json(missing.id), as_json(value)
 
 
 # ensure full commit
@@ -141,7 +142,7 @@ async def all_docs_json(db, store):
     for key, doc_info in db._byid.items():
         branch = doc_info.rev_tree[doc_info.winning_branch_idx]
         if branch.leaf_doc_ptr:
-            r = rev(*rev_tuple(branch, branch.leaf_rev_num))
+            r = rev(*branch.leaf_rev_tuple)
             yield as_json({'id': key, 'key': key, 'value': {'rev': r}})
             store['total_rows'] += 1
 

@@ -5,31 +5,31 @@ from .datatypes import Change, Missing, NotFound
 
 def build_change(id, seq, rev_tree):
     deleted = rev_tree.winner().leaf_doc_ptr is None
-    leaf_revs = [rev_tuple(b, b.leaf_rev_num) for b in rev_tree.branches()]
+    leaf_revs = [branch.leaf_rev_tuple for branch in rev_tree.branches()]
     return Change(id, seq, deleted, leaf_revs)
 
 
 def revs_diff(id, revs, rev_tree):
-    revs_in_db = (rev_tuple(b, rn) for b, rn in rev_tree.all_revs())
-    return Missing(id, set(revs).difference(revs_in_db))
-
-
-def rev_tuple(branch, rev_num):
-    return rev_num, branch.path[branch.index(rev_num)]
+    missing, possible_ancestors = set(), set()
+    for rev in revs:
+        is_missing, new_possible_ancestors = rev_tree.diff(*rev)
+        if is_missing:
+            missing.add(rev)
+            possible_ancestors.update(new_possible_ancestors)
+    return Missing(id, missing, possible_ancestors)
 
 
 def read_docs(id, revs, rev_tree):
     # ... walk the revision tree
     if revs == 'winner':
         yield rev_tree.winner()
+    elif revs == 'all':
+        # all leafs
+        yield from rev_tree.branches()
     else:
-        if revs == 'all':
-            # all leafs
-            yield from rev_tree.branches()
-        else:
-            for rev in revs:
-                # search for specific revisions
-                yield from rev_tree.find(*rev)
+        # some leafs
+        for rev in revs:
+            yield from rev_tree.find(*rev)
 
 
 class ContinuousChangesMixin:

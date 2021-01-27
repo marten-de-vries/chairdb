@@ -47,11 +47,11 @@ async def replicate(source, target, create_target=False, continuous=False):
     diff_input = revs_diff_input(changes, hist_entry)
 
     # - 2.4.2.4.3. Calculate Revision Difference
-    differences = target.revs_diff(diff_input)
+    r_input = read_input(target.revs_diff(diff_input))
 
     # 2.4.2.5. Replicate Changes
     #  - 2.4.2.5.1. Fetch Changed Documents
-    write_input = count_docs(source.read(differences), hist_entry)
+    write_input = count_docs(source.read(r_input), hist_entry)
 
     # - 2.4.2.5.2. Upload Batch of Changed Documents
     async for error in target.write(write_input):
@@ -147,6 +147,11 @@ async def revs_diff_input(changes, history_entry):
     async for change in changes:
         yield change.id, change.leaf_revs
         history_entry['recorded_seq'] = change.seq
+
+
+async def read_input(differences):
+    async for id, missing_revs, _ in differences:
+        yield id, missing_revs
 
 
 async def count_docs(docs, history_entry):

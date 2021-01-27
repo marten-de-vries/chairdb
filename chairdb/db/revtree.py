@@ -16,6 +16,10 @@ class Branch(typing.NamedTuple):
 
         return self.leaf_rev_num - rev_num
 
+    @property
+    def leaf_rev_tuple(self):
+        return self.leaf_rev_num, self.path[0]
+
 
 class RevisionTree(list):
     """A revision tree like:
@@ -42,11 +46,7 @@ class RevisionTree(list):
         super().__init__(branches)
 
         # used to keep the tree sorted by leaf's revision number and hash
-        self._keys = [self._by_max_rev(branch) for branch in self]
-
-    def _by_max_rev(self, branch):
-        # branch.path[0] is the leaf's revision hash
-        return branch.leaf_rev_num, branch.path[0]
+        self._keys = [branch.leaf_rev_tuple for branch in self]
 
     def merge_with_path(self, doc_rev_num, doc_path, doc_ptr, revs_limit=1000):
         """Merges a document into the revision tree, storing 'doc' into a leaf
@@ -124,7 +124,7 @@ class RevisionTree(list):
 
         branch = Branch(doc_rev_num, full_path, doc_ptr)
         # actual insertion using bisection
-        key = self._by_max_rev(branch)
+        key = branch.leaf_rev_tuple
         i = bisect.bisect(self._keys, key)
         self._keys.insert(i, key)
         self.insert(i, branch)
@@ -138,6 +138,23 @@ class RevisionTree(list):
             i = branch.index(rev_num)
             if 0 <= i < len(branch.path) and branch.path[i] == rev_hash:
                 yield branch
+
+    def diff(self, rev_num, rev_hash):
+        """Takes a revision (rev_num, rev_hash) as its input. Returns a
+        (is_missing, possible_ancestors) tuple. ``is_missing`` is a bool that's
+        False when the revision is in the tree. If it's True,
+        ``possible_ancestors`` will be a set of branches that could
+        theoretically be extended to include the revision.
+
+        """
+        possible_ancestors = set()
+        for branch in self.branches():
+            i = branch.index(rev_num)
+            if i < 0:
+                possible_ancestors.add(branch.leaf_rev_tuple)
+            elif i < len(branch.path) and branch.path[i] == rev_hash:
+                return False, None
+        return True, possible_ancestors
 
     def branches(self):
         """All branches in the tree. Those with the highest revision number and
@@ -161,10 +178,3 @@ class RevisionTree(list):
                 return branch  # best non-deleted branch
             best_deleted_branch = best_deleted_branch or branch
         return best_deleted_branch
-
-    def all_revs(self):
-        """All revisions in the tree as (branch, rev_num) tuples."""
-
-        for branch in self.branches():
-            for i in range(len(branch.path)):
-                yield branch, branch.leaf_rev_num - i

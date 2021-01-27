@@ -50,7 +50,8 @@ READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 
 # TODO: error handling
 class SQLDatabase(ContinuousChangesMixin):
-    def __init__(self, db):
+    def __init__(self, db, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._db = db
 
     async def __aenter__(self):

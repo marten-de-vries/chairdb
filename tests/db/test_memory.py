@@ -31,9 +31,9 @@ def test_read_all(db):
 
 def test_revs_diff(db):
     insert_doc(db)
-    m1 = Missing('test', {(1, 'b')})
-    assert db.revs_diff_sync('test', [(1, 'a'), (1, 'b')]) == m1
-    m2 = Missing('unexisting', {(1, 'c')})
+    m1 = Missing('test', {(2, 'b')}, {(1, 'a')})
+    assert db.revs_diff_sync('test', [(1, 'a'), (2, 'b')]) == m1
+    m2 = Missing('unexisting', {(1, 'c')}, set())
     assert db.revs_diff_sync('unexisting', [(1, 'c')]) == m2
 
 
@@ -145,7 +145,7 @@ async def test_async(db):
     assert await to_list(db.revs_diff(async_iter([
         ('unexisting', [(1, 'x'), (2, 'y')])
     ]))) == [
-        Missing('unexisting', {(1, 'x'), (2, 'y')}),
+        Missing('unexisting', {(1, 'x'), (2, 'y')}, set()),
     ]
     docs = [
         Document('mytest', 1, ['x'], {'Hello': 'World!'}),

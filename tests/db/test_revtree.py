@@ -10,7 +10,7 @@ def validate_rev_tree(tree):
         assert all(isinstance(rev_hash, str) for rev_hash in branch.path)
         assert (branch.leaf_doc_ptr is None or
                 isinstance(branch.leaf_doc_ptr, dict))
-    assert sorted(tree, key=tree._by_max_rev) == tree
+    assert sorted(tree, key=lambda b: b.leaf_rev_tuple) == tree
 
 
 def test_new_branch():
@@ -24,7 +24,7 @@ def test_new_branch():
         Branch(3, ['f', 'c', 'a'], {}),
         Branch(3, ['g', 'c', 'a'], {}),
     ])
-    assert [(b.leaf_rev_num, b.path[0]) for b in tree.branches()] == [
+    assert [branch.leaf_rev_tuple for branch in tree.branches()] == [
         (3, 'g'),
         (3, 'f'),
         (3, 'e'),

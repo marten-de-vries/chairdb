@@ -108,7 +108,9 @@ class HTTPDatabase(httpx.AsyncClient):
 
             async for id, info in parse_json_stream(resp.aiter_bytes(),
                                                     'kvitems', ''):
-                yield Missing(id, [parse_rev(r) for r in info['missing']])
+                missing_revs = [parse_rev(r) for r in info['missing']]
+                pa = [parse_rev(r) for r in info.get('possible_ancestors', [])]
+                yield Missing(id, missing_revs, pa)
 
     async def _revs_diff_json(self, remote):
         async for id, revs in remote:
@@ -215,7 +217,8 @@ class HTTPDatabase(httpx.AsyncClient):
 
     async def read_local(self, id):
         doc = await self._read_doc('_local/' + id, {}).__anext__()
-        return doc.body
+        with contextlib.suppress(AttributeError):
+            return doc.body
 
     async def ensure_full_commit(self):
         await self._request('POST', '_ensure_full_commit')

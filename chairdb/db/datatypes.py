@@ -30,6 +30,7 @@ class Change(typing.NamedTuple):
 class Missing(typing.NamedTuple):
     id: str
     missing_revs: typing.List[str]
+    possible_ancestors: typing.List[str]
 
 
 class AbstractDocument:
