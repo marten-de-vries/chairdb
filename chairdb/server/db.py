@@ -128,7 +128,6 @@ async def ensure_full_commit(request):
     return JSONResp(FULL_COMMIT, 201)
 
 
-# all docs: rewrite later
 def all_docs(request):
     info = {'total_rows': 0}
     items = all_docs_json(get_db(request), info)
@@ -139,8 +138,8 @@ def all_docs(request):
 
 
 async def all_docs_json(db, store):
-    for key, doc_info in db._byid.items():
-        branch = doc_info.rev_tree[doc_info.winning_branch_idx]
+    for key, (rev_tree, _) in db._byid.items():
+        branch = rev_tree.winner()
         if branch.leaf_doc_ptr:
             r = rev(*branch.leaf_rev_tuple)
             yield as_json({'id': key, 'key': key, 'value': {'rev': r}})

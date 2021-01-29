@@ -1,10 +1,24 @@
 import sortedcontainers
 
 import uuid
+import typing
 
-from .datatypes import NotFound, Document
+from .datatypes import NotFound, Document, AttachmentMetadata
+from .attachments import AttachmentStore
 from .revtree import RevisionTree
 from .shared import build_change, revs_diff, read_docs, AsyncDatabaseMixin
+
+
+class InMemoryAttachment(typing.NamedTuple):
+    meta: AttachmentMetadata
+    data: bytes
+    is_stub: bool = False
+
+    def __iter__(self):
+        yield self.data  # sync API
+
+    async def __aiter__(self):
+        yield self.data  # async API
 
 
 class InMemoryDatabase(AsyncDatabaseMixin):
@@ -39,7 +53,7 @@ class InMemoryDatabase(AsyncDatabaseMixin):
         try:
             rev_tree, _ = self._byid[id]
         except KeyError:
-            rev_tree = RevisionTree([])
+            rev_tree = RevisionTree()
         return revs_diff(id, revs, rev_tree)
 
     def write_local_sync(self, id, doc):
@@ -49,34 +63,70 @@ class InMemoryDatabase(AsyncDatabaseMixin):
             self._local[id] = doc
 
     def write_sync(self, doc):
+        # get the new document's path and check if it replaces something
         try:
             tree, last_update_seq = self._byid[doc.id]
         except KeyError:
-            tree = RevisionTree([])
-        else:
-            # update the by seq index by first removing a previous reference to
-            # the current document (if there is one), and then (later)
-            # inserting a new one.
-            del self._byseq[last_update_seq]
+            tree, last_update_seq = RevisionTree(), None
 
-        tree.merge_with_path(doc.rev_num, doc.path, doc.body,
-                             self.revs_limit_sync)
+        full_path, old_index = tree.merge_with_path(doc.rev_num, doc.path)
+        if not full_path:
+            return  # document already in the database.
+
+        doc_ptr = self._create_doc_ptr(doc, tree, old_index)
+        # insert or replace in the rev tree
+        tree.update(doc.rev_num, full_path, doc_ptr, old_index,
+                    self.revs_limit_sync)
+
         self.update_seq_sync += 1
         # actual insertion by updating the document info in the indices
         self._byid[doc.id] = tree, self.update_seq_sync
+        # update the by seq index by first removing a previous reference to the
+        # current document (if there is one), and then inserting a new one.
+        if last_update_seq:
+            del self._byseq[last_update_seq]
         self._byseq[self.update_seq_sync] = doc.id
 
         # Let superclass(es) know stuff changed
         self._updated()
 
+    def _create_doc_ptr(self, doc, tree, old_index):
+        """A doc_ptr is a (body, attachments) tuple for the in-memory case."""
+
+        doc_ptr = None
+        if not doc.is_deleted:
+            try:
+                _, att_store = tree[old_index].leaf_doc_ptr
+            except TypeError:
+                att_store = AttachmentStore()
+            todo = att_store.merge(doc.attachments)
+            for name, attachment in todo:
+                data_ptr = b''.join(attachment)
+                att_store.add(name, attachment.meta, data_ptr)
+            doc_ptr = (doc.body, att_store)
+        return doc_ptr
+
     def read_local_sync(self, id):
         return self._local.get(id)
 
-    def read_sync(self, id, revs):
+    def read_sync(self, id, revs, att_names=None, atts_since=None):
         try:
             # find it using the 'by id' index
             rev_tree, _ = self._byid[id]
-            for branch in read_docs(id, revs, rev_tree):
-                yield Document(id, *branch)
         except KeyError as e:
             raise NotFound(id) from e
+
+        for branch in read_docs(id, revs, rev_tree):
+            yield from self._read_doc(id, branch, att_names, atts_since)
+
+    def _read_doc(self, id, branch, att_names, atts_since):
+        rev_num = branch.leaf_rev_num
+        try:
+            doc, att_store = branch.leaf_doc_ptr
+        except TypeError:
+            doc, atts = None, None
+        else:
+            atts, todo = att_store.read(branch, att_names, atts_since)
+            for name, info in todo:
+                atts[name] = InMemoryAttachment(info.meta, info.data_ptr)
+        yield Document(id, rev_num, branch.path, doc, atts)

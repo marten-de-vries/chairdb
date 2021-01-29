@@ -13,7 +13,12 @@ TABLE_CREATE = [
         id STRING,
         rev_tree JSON
     )""",
-    """CREATE TABLE blobs (
+    """CREATE TABLE documents (
+        id INTEGER PRIMARY KEY,
+        body JSON,
+        attachments JSON
+    )""",
+    """CREATE TABLE attachments (
         id INTEGER PRIMARY KEY,
         data BLOB
     )""",
@@ -39,9 +44,9 @@ WRITE_LOCAL = "INSERT INTO local_documents VALUES (:id, :document)"
 WRITE = """INSERT OR REPLACE INTO revision_trees
 VALUES (NULL, :id, :rev_tree)"""
 
-WRITE_BLOB = "INSERT INTO blobs VALUES (NULL, :data)"
-DELETE_BLOB = "DELETE FROM blobs WHERE id=:id"
-READ_BLOB = "SELECT data FROM blobs WHERE id=:id"
+WRITE_DOC = "INSERT INTO documents VALUES (NULL, :body, NULL)"
+DELETE_DOC = "DELETE FROM documents WHERE id=:id"
+READ_DOC = "SELECT body FROM documents WHERE id=:id"
 
 READ_LOCAL = "SELECT document FROM local_documents WHERE id=:id"
 
@@ -104,16 +109,16 @@ class SQLDatabase(ContinuousChangesMixin):
         await self._db.execute(WRITE_LOCAL, values)
 
     async def _write_doc(self, doc):
-        # insert blob
-        ptr = doc.body
-        if ptr:
-            value = {'data': as_json(doc.body)}
-            ptr = await self._db.execute(WRITE_BLOB, value)
-
         tree = await self._revs_tree(doc.id)
-        # TODO: non-fixed revs limit
-        old_ptr = tree.merge_with_path(doc.rev_num, doc.path, ptr, 1000)
-        await self._db.execute(DELETE_BLOB, {'id': old_ptr})
+        full_path, old_index = tree.merge_with_path(doc.rev_num, doc.path)
+        if not full_path:
+            return
+        if old_index is not None:
+            old_doc_ptr = tree[old_index].leaf_doc_ptr
+            await self._db.execute(DELETE_DOC, {'id': old_doc_ptr})
+        doc_ptr = await self._db.execute(WRITE_DOC, value={'doc': doc.body})
+        # TODO: revs limit
+        tree.update(doc.rev_num, full_path, doc_ptr, old_index)
         values = {'id': doc.id, 'rev_tree': as_json(tree)}
         await self._db.execute(WRITE, values)
 
@@ -130,7 +135,7 @@ class SQLDatabase(ContinuousChangesMixin):
             for branch in read_docs(id, revs, rev_tree):
                 body = branch.leaf_doc_ptr
                 if body is not None:
-                    body = await self._fetch_body(READ_BLOB, body)
+                    body = await self._fetch_body(READ_DOC, body)
                 yield Document(id, branch.leaf_rev_num, branch.path, body)
 
     async def _fetch_body(self, query, id):

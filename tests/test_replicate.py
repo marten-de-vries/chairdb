@@ -12,7 +12,7 @@ from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
 @pytest.mark.asyncio
 @pytest.fixture
 async def sql_target():
-    async with databases.Database('sqlite:///test.sqlite3') as db:
+    async with databases.Database('sqlite:////dev/shm/test.sqlite3') as db:
         async with SQLDatabase(db) as target2:
             yield target2
 
@@ -47,15 +47,15 @@ async def test_replicate_multi(sql_target):
 @pytest.mark.asyncio
 async def test_replicate_continuous():
     source = InMemoryDatabase()
-    source.write_sync(Document('test', 1, ['a'], {}))
+    source.write_sync(Document('test', 1, ('a',), {}))
     target = InMemoryDatabase()
     task = asyncio.create_task(replicate(source, target, continuous=True))
     # verify the 'normal' replication is done (everything in the db has been
     # replicated succesfully)
-    await document_existance(target, Document('test', 1, ['a'], {}))
+    await document_existance(target, Document('test', 1, ('a',), {}))
     # now write another document to check 'continuous=True'
-    source.write_sync(Document('test2', 1, ['b'], {}))
-    await document_existance(target, Document('test2', 1, ['b'], {}))
+    source.write_sync(Document('test2', 1, ('b',), {}))
+    await document_existance(target, Document('test2', 1, ('b',), {}))
     # clean up
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):

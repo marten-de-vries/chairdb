@@ -96,7 +96,7 @@ def couchdb_json_to_doc(json, id=None):
         id = id[len('_local/'):]
         doc = LocalDocument(id, body)
     else:
-        rev_num, path = revs['start'], revs['ids']
+        rev_num, path = revs['start'], tuple(revs['ids'])
         doc = Document(id, rev_num, path, body)
     return doc
 
@@ -108,7 +108,7 @@ def doc_to_couchdb_json(doc):
         r = rev(doc.rev_num, doc.path[0])
         revs = {'start': doc.rev_num, 'ids': doc.path}
         json = {'_id': doc.id, '_rev': r, '_revisions': revs}
-    if doc.deleted:
+    if doc.is_deleted:
         json['_deleted'] = True
     else:
         json.update(doc.body)

@@ -4,7 +4,7 @@ import asyncio
 import httpx
 import json
 
-from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
+from .datatypes import (Unauthorized, Forbidden, NotFound, Change, Missing)
 from .multipart import MultipartResponseParser
 from ..utils import (as_json, parse_json_stream, parse_rev, json_array_inner,
                      rev, couchdb_json_to_doc, doc_to_couchdb_json,

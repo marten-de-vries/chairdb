@@ -1164,7 +1164,7 @@ While the above is a full implementation of a CouchDB-compatible database and re
 
 ## Final words
 
-If you read this far, **congratulations**! You now know how to write a CouchDB-compatible database, including replication. If you write one of your own, or if you have any remarks, comments or questions, I'd love to hear from you. [Drop me an email](mailto:m@rtendevri.es), or [comment on HN](https://news.ycombinator.com/item?id=25892504). Thank you for reading!
+If you read this far, **congratulations**! You now know how to write a CouchDB-compatible database, including replication. If you write one of your own, or if you have any remarks, comments or questions, I'd love to hear from you. [Drop me an email](mailto:m@rtendevri.es). Thank you for reading!
 
 ---
 

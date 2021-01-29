@@ -1,6 +1,7 @@
 import asyncio
 
 from .datatypes import Change, Missing, NotFound
+from ..utils import to_list
 
 
 def build_change(id, seq, rev_tree):
@@ -131,9 +132,17 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
         async for doc in docs:
             try:
+                await self._syncify_attachments(doc)
                 self.write_sync(doc)
             except Exception as exc:
                 yield exc
+
+    async def _syncify_attachments(self, doc):
+        if doc.attachments:
+            for name, att in doc.attachments.items():
+                if not att.is_stub:
+                    data_list = await to_list(att)
+                    doc.attachments[name] = SyncAttachment(att.meta, data_list)
 
     async def read_local(self, id):
         return self.read_local_sync(id)
@@ -154,9 +163,9 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
         document leafs. That's why this method is an (async) generator.
 
         """
-        async for id, revs in requested:
+        async for request in requested:
             try:
-                for doc in self.read_sync(id, revs):
+                for doc in self.read_sync(*request):
                     yield doc
             except NotFound as exc:
                 yield exc
@@ -170,3 +179,11 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
     async def set_revs_limit(self, value):
         self.revs_limit_sync = value
+
+
+class SyncAttachment(list):
+    def __init__(self, meta, data_list):
+        super().__init__(data_list)
+
+        self.is_stub = False
+        self.meta = meta

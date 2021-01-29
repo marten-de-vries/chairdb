@@ -8,13 +8,17 @@ class Branch(typing.NamedTuple):
 
     """
     leaf_rev_num: int
-    path: list
+    path: tuple
     leaf_doc_ptr: typing.Optional[typing.Any]
 
     def index(self, rev_num):
         """Convert a revision number to a Branch.path index"""
 
         return self.leaf_rev_num - rev_num
+
+    def contains(self, rev_num, rev_hash):
+        i = self.index(rev_num)
+        return 0 <= i < len(self.path) and self.path[i] == rev_hash
 
     @property
     def leaf_rev_tuple(self):
@@ -42,13 +46,13 @@ class RevisionTree(list):
     (from low -> high). This simplifies winner determination.
 
     """
-    def __init__(self, branches):
+    def __init__(self, branches=[]):
         super().__init__(branches)
 
         # used to keep the tree sorted by leaf's revision number and hash
         self._keys = [branch.leaf_rev_tuple for branch in self]
 
-    def merge_with_path(self, doc_rev_num, doc_path, doc_ptr, revs_limit=1000):
+    def merge_with_path(self, doc_rev_num, doc_path):
         """Merges a document into the revision tree, storing 'doc' into a leaf
         node (assuming the location pointed at by 'rev_num' and 'path' would in
         fact be a leaf node, which is not the case if a document has already
@@ -65,34 +69,29 @@ class RevisionTree(list):
             # 1. check if already in tree. E.g.:
             #
             # branch.leaf_rev_num = 5
-            # branch.path = ['e', 'd', 'c']
+            # branch.path = ('e', 'd', 'c')
             #
             # doc_rev_num = 3
-            # doc_path = ['c', 'b', 'a']
-            j = branch.index(doc_rev_num)
-            if 0 <= j < len(branch.path) and branch.path[j] == doc_path[0]:
+            # doc_path = ('c', 'b', 'a')
+            if branch.contains(doc_rev_num, doc_path[0]):
                 # it is. Done. The new doc can be removed
-                return doc_ptr
+                return None, None
 
             # 2. extend branch if possible. E.g.:
             #
             # branch.leaf_rev_num = 3
-            # branch.path = ['c', 'b', 'a']
+            # branch.path = ('c', 'b', 'a')
             # doc_rev_num = 5
-            # doc_path = ['e', 'd', 'c', 'b']
+            # doc_path = ('e', 'd', 'c', 'b')
             k = doc_rev_num - branch.leaf_rev_num
             if 0 <= k < len(doc_path) and doc_path[k] == branch.path[0]:
-                new_path = doc_path[:k] + branch.path
-                del self[i]
-                del self._keys[i]
-                self._insert_branch(doc_rev_num, new_path, doc_ptr, revs_limit)
                 # it is. Done. The old doc can be removed.
-                return branch.leaf_doc_ptr
+                return doc_path[:k] + branch.path, i
 
         # otherwise insert as a new leaf branch:
-        self._insert_as_new_branch(doc_rev_num, doc_path, doc_ptr, revs_limit)
+        return self._insert_as_new_branch(doc_rev_num, doc_path)
 
-    def _insert_as_new_branch(self, doc_rev_num, doc_path, doc_ptr, revs_lim):
+    def _insert_as_new_branch(self, doc_rev_num, doc_path):
         for branch in self.branches():
             # 3. try to find common history
             start_branch_rev_num = branch.leaf_rev_num + 1 - len(branch.path)
@@ -109,25 +108,26 @@ class RevisionTree(list):
             )
             if common_rev:
                 # success, combine both halves into a 'full_path'
-                full_path = doc_path[:doc_i] + branch.path[branch_i:]
-                break
-        else:
-            # 4. a new branch without shared history
-            full_path = doc_path
+                return doc_path[:doc_i] + branch.path[branch_i:], None
+        # 4. a new branch without shared history
+        return doc_path, None
 
-        self._insert_branch(doc_rev_num, full_path, doc_ptr, revs_lim)
+    def update(self, rev_num, path, ptr, old_index=None, revs_limit=1000):
+        if old_index is not None:
+            # replace by removing the old branch first
+            del self[old_index]
+            del self._keys[old_index]
 
-    def _insert_branch(self, doc_rev_num, full_path, doc_ptr, revs_limit):
         # stem using revs_limit
         assert revs_limit > 0
-        del full_path[revs_limit:]
+        path = path[:revs_limit]
 
-        branch = Branch(doc_rev_num, full_path, doc_ptr)
+        new_branch = Branch(rev_num, path, ptr)
         # actual insertion using bisection
-        key = branch.leaf_rev_tuple
+        key = new_branch.leaf_rev_tuple
         i = bisect.bisect(self._keys, key)
         self._keys.insert(i, key)
-        self.insert(i, branch)
+        self.insert(i, new_branch)
 
     def find(self, rev_num, rev_hash):
         """Find the branches in which the revision specified by the arguments
@@ -135,8 +135,7 @@ class RevisionTree(list):
 
         """
         for branch in self.branches():
-            i = branch.index(rev_num)
-            if 0 <= i < len(branch.path) and branch.path[i] == rev_hash:
+            if branch.contains(rev_num, rev_hash):
                 yield branch
 
     def diff(self, rev_num, rev_hash):
@@ -149,11 +148,10 @@ class RevisionTree(list):
         """
         possible_ancestors = set()
         for branch in self.branches():
-            i = branch.index(rev_num)
-            if i < 0:
-                possible_ancestors.add(branch.leaf_rev_tuple)
-            elif i < len(branch.path) and branch.path[i] == rev_hash:
+            if branch.contains(rev_num, rev_hash):
                 return False, None
+            elif rev_num > branch.leaf_rev_num:
+                possible_ancestors.add(branch.leaf_rev_tuple)
         return True, possible_ancestors
 
     def branches(self):
@@ -161,6 +159,7 @@ class RevisionTree(list):
         hash first.
 
         """
+        assert all(isinstance(b.path, tuple) for b in self)
         return reversed(self)
 
     def winner(self):
