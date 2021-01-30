@@ -119,11 +119,12 @@ class MultipartParser:
                 key, value = line.decode('UTF-8').split(': ', maxsplit=1)
                 self.current_headers[key] = value
             else:
-                self.results.append({
+                self.cur_result = {
                     'headers': self.current_headers,
                     'body': bytearray(),
                     'done': False
-                })
+                }
+                self.results.append(self.cur_result)
                 self.change_state(self.READ_DOC)
 
     def READ_DOC(self):
@@ -131,12 +132,12 @@ class MultipartParser:
             data = self._data_before(self.boundary)
         except self.OutOfData:
             # move input that cannot contain the boundary out of the way.
-            self.results[-1]['body'].extend(self.cache[:-len(self.boundary)])
+            self.cur_result['body'].extend(self.cache[:-len(self.boundary)])
             del self.cache[:-len(self.boundary)]
             # ... but re-raise, as we still need to find the boundary.
             raise
-        self.results[-1]['body'].extend(data)
-        self.results[-1]['done'] = True
+        self.cur_result['body'].extend(data)
+        self.cur_result['done'] = True
         self.change_state(self.READ_BOUNDARY_END)
 
     def DONE(self):

@@ -55,7 +55,7 @@ async def replicate(source, target, create_target=False, continuous=False):
 
     # - 2.4.2.5.2. Upload Batch of Changed Documents
     async for error in target.write(write_input):
-        print(error)
+        print(repr(error))
         # - 2.4.2.5.3 TODO (attachments)
         hist_entry['doc_write_failures'] += 1
 
@@ -150,8 +150,8 @@ async def revs_diff_input(changes, history_entry):
 
 
 async def read_input(differences):
-    async for id, missing_revs, _ in differences:
-        yield id, missing_revs
+    async for id, missing_revs, possible_ancestors in differences:
+        yield id, missing_revs, None, possible_ancestors
 
 
 async def count_docs(docs, history_entry):

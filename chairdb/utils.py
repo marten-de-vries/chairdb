@@ -1,9 +1,12 @@
 import ijson
 
+import base64
 import contextlib
 import json
+import typing
 
-from .db.datatypes import Document, AbstractDocument
+from .db.datatypes import (Document, AbstractDocument, AttachmentStub,
+                           AttachmentMetadata)
 
 
 # JSON helpers
@@ -92,13 +95,45 @@ def couchdb_json_to_doc(json, id=None):
     json.pop('_rev', None)
     revs = json.pop('_revisions', None)
     body = None if json.get('_deleted') else json
+    todo = []
     if id.startswith('_local/'):
         id = id[len('_local/'):]
         doc = LocalDocument(id, body)
     else:
+        atts = None if body is None else parse_attachments(body, todo)
         rev_num, path = revs['start'], tuple(revs['ids'])
-        doc = Document(id, rev_num, path, body)
-    return doc
+        doc = Document(id, rev_num, path, body, atts)
+    return doc, todo
+
+
+def parse_attachments(body, todo):
+    atts = {}
+    for name, info in body.pop('_attachments', {}).items():
+        meta = AttachmentMetadata(info['revpos'], info['content_type'],
+                                  info['length'], info['digest'])
+        if info.pop('stub', False):
+            atts[name] = AttachmentStub(meta)
+        else:
+            try:
+                data = base64.b64decode(info['data'])
+            except KeyError:
+                assert info['follows']
+                todo.append((name, meta))
+            else:
+                atts[name] = InMemoryAttachment(meta, data)
+    return atts
+
+
+class InMemoryAttachment(typing.NamedTuple):
+    meta: AttachmentMetadata
+    data: bytes
+    is_stub: bool = False
+
+    def __iter__(self):
+        yield self.data  # sync API
+
+    async def __aiter__(self):
+        yield self.data  # async API
 
 
 def doc_to_couchdb_json(doc):

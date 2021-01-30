@@ -119,7 +119,7 @@ class RevisionTree(list):
             del self._keys[old_index]
 
         # stem using revs_limit
-        assert revs_limit > 0
+        assert revs_limit > 0, "invalid revs limit"
         path = path[:revs_limit]
 
         new_branch = Branch(rev_num, path, ptr)
@@ -159,7 +159,6 @@ class RevisionTree(list):
         hash first.
 
         """
-        assert all(isinstance(b.path, tuple) for b in self)
         return reversed(self)
 
     def winner(self):

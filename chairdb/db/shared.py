@@ -139,10 +139,15 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
     async def _syncify_attachments(self, doc):
         if doc.attachments:
+            tasks = []
             for name, att in doc.attachments.items():
                 if not att.is_stub:
-                    data_list = await to_list(att)
-                    doc.attachments[name] = SyncAttachment(att.meta, data_list)
+                    tasks.append(self._syncify_att(doc, name, att))
+            await asyncio.gather(*tasks)
+
+    async def _syncify_att(self, doc, name, att):
+        data_list = await to_list(att)
+        doc.attachments[name] = SyncAttachment(att.meta, data_list)
 
     async def read_local(self, id):
         return self.read_local_sync(id)

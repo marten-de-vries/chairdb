@@ -163,7 +163,8 @@ async def bulk_docs(request):
 async def write_all(db, docs):
     writes = []
     for json in docs:
-        doc = couchdb_json_to_doc(json)
+        doc, todo = couchdb_json_to_doc(json)
+        assert not todo
         if isinstance(doc, LocalDocument):
             await db.write_local(doc.id, doc.body)
         else:
@@ -290,7 +291,9 @@ class DocumentEndpoint(HTTPEndpoint):
         doc_id = request.path_params['id']
         if not doc_id.startswith('_local/'):
             return JSONResp(DOC_NOT_FOUND, 404)  # FIXME
-        doc = couchdb_json_to_doc(await request.json(), doc_id)
+        doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
+        # TODO: handle multipart instead of just asserting like below
+        assert not todo
 
         await get_db(request).write_local(doc.id, doc.body)
 

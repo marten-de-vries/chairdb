@@ -95,7 +95,7 @@ class Document(AbstractDocument):
         if not content_type:
             content_type = mimetypes.guess_type(name)[0]
         attachment = NewAttachment(self.rev_num, content_type, iterator)
-        self.attachments[name] = (attachment)
+        self.attachments[name] = attachment
 
 
 class NewAttachment:

@@ -95,7 +95,8 @@ class SQLDatabase(ContinuousChangesMixin):
         return self._decode_tree(tree[0])
 
     def _decode_tree(self, data):
-        return RevisionTree([Branch(*branch) for branch in json.loads(data)])
+        return RevisionTree(Branch(rn, tuple(path), ptr)
+                            for rn, path, ptr in json.loads(data))
 
     async def write(self, docs):
         async for doc in docs:
@@ -116,7 +117,8 @@ class SQLDatabase(ContinuousChangesMixin):
         if old_index is not None:
             old_doc_ptr = tree[old_index].leaf_doc_ptr
             await self._db.execute(DELETE_DOC, {'id': old_doc_ptr})
-        doc_ptr = await self._db.execute(WRITE_DOC, value={'doc': doc.body})
+        values = {'body': as_json(doc.body)}
+        doc_ptr = await self._db.execute(WRITE_DOC, values)
         # TODO: revs limit
         tree.update(doc.rev_num, full_path, doc_ptr, old_index)
         values = {'id': doc.id, 'rev_tree': as_json(tree)}
@@ -129,7 +131,7 @@ class SQLDatabase(ContinuousChangesMixin):
             return await self._fetch_body(READ_LOCAL, id)
 
     async def read(self, requested):
-        async for id, revs in requested:
+        async for id, revs, *_ in requested:
             raw_tree = await self._db.fetch_one(READ, {'id': id})
             rev_tree = self._decode_tree(raw_tree[0])
             for branch in read_docs(id, revs, rev_tree):

@@ -1,24 +1,12 @@
 import sortedcontainers
 
 import uuid
-import typing
 
-from .datatypes import NotFound, Document, AttachmentMetadata
+from .datatypes import NotFound, Document
 from .attachments import AttachmentStore
 from .revtree import RevisionTree
 from .shared import build_change, revs_diff, read_docs, AsyncDatabaseMixin
-
-
-class InMemoryAttachment(typing.NamedTuple):
-    meta: AttachmentMetadata
-    data: bytes
-    is_stub: bool = False
-
-    def __iter__(self):
-        yield self.data  # sync API
-
-    async def __aiter__(self):
-        yield self.data  # async API
+from ..utils import InMemoryAttachment
 
 
 class InMemoryDatabase(AsyncDatabaseMixin):
