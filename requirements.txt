@@ -5,6 +5,7 @@ ijson
 databases
 aiosqlite
 uvicorn
+aiofiles
 flake8
 pytest
 pytest-asyncio

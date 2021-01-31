@@ -5,3 +5,4 @@ integrationtest/data
 __pycache__
 test.sqlite3
 blog/out
+chairdb/server/fauxton

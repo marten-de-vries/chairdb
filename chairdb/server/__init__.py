@@ -3,9 +3,11 @@
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 from starlette.middleware import Middleware
+from starlette.staticfiles import StaticFiles
 
 import sortedcontainers
 import uuid
+import os
 
 from .. import InMemoryDatabase
 from .db import build_db_app
@@ -26,6 +28,11 @@ DB_EXISTS = {
 
 SUCCESS = {
     "ok": True,
+}
+
+SESSION = {
+    "ok": True,
+    "userCtx": {"name": None, "roles":["_admin"]},
 }
 
 
@@ -49,8 +56,19 @@ async def put_db(request):
     return JSONResp(SUCCESS, 201)
 
 
+def delete_db(request):
+    dbname = request.path_params['db']
+    request.app.state.dbs.pop(dbname, None)
+    return JSONResp(SUCCESS, 200)
+
+
 def all_dbs(request):
     return JSONResp(list(request.app.state.dbs.keys()))
+
+
+def session(request):
+    return JSONResp(SESSION)
+
 
 
 class DBLoaderMiddleware:
@@ -67,6 +85,7 @@ class DBLoaderMiddleware:
             request_state = scope.setdefault('state', {})
             try:
                 request_state['db'] = app.state.dbs[db_name]
+                request_state['db_name'] = db_name
             except KeyError:
                 response = JSONResp(DB_NOT_FOUND, 404)
                 await response(scope, receive, send)
@@ -76,10 +95,14 @@ class DBLoaderMiddleware:
 
 db_app = build_db_app(middleware=[Middleware(DBLoaderMiddleware)])
 
+fauxton_path = os.path.join(os.path.dirname(__file__), 'fauxton')
 app = Starlette(routes=[
     Route('/', root),
     Route('/_all_dbs', all_dbs),
+    Route('/_session', session),
+    Mount('/_utils', StaticFiles(directory=fauxton_path, html=True)),
     Route('/{db}/', put_db, methods=['PUT']),
+    Route('/{db}/', delete_db, methods=['DELETE']),
     Mount('/{db}', db_app),
 ])
 

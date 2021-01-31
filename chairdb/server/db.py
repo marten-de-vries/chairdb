@@ -12,6 +12,7 @@ from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
 import asyncio
+import contextlib
 import functools
 import logging
 import uuid
@@ -43,12 +44,22 @@ def get_db(request):
         return request.app.state.db
 
 
+def db_name(request):
+    try:
+        return request.state.db_name
+    except AttributeError:
+        return request.app.state.db_name
+
+
 class Database(HTTPEndpoint):
     async def get(self, request):
-        return JSONResp({
+        result = {
             "instance_start_time": "0",
             "update_seq": await get_db(request).update_seq
-        })
+        }
+        with contextlib.suppress(AttributeError):
+            result['db_name'] = db_name(request)
+        return JSONResp(result)
 
     def post(self, request):
         raise NotImplementedError()
