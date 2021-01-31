@@ -61,6 +61,19 @@ READ_LOCAL = "SELECT document FROM local_documents WHERE id=:id"
 READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 
 
+class SQLAttachment:
+    def __init__(self, db, att):
+        self._db = db
+        self._data_ptr = att.data_ptr
+
+        self.meta = att.meta
+        self.is_stub = False
+
+    async def __aiter__(self):
+        for chunk_ptr in self._data_ptr:
+            yield await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr})[0]
+
+
 # TODO: error handling
 class SQLDatabase(ContinuousChangesMixin):
     def __init__(self, db, *args, **kwargs):
@@ -167,21 +180,30 @@ class SQLDatabase(ContinuousChangesMixin):
 
     async def read_local(self, id):
         with contextlib.suppress(TypeError):
-            return await self._fetch_body(READ_LOCAL, id)
+            raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
+            return json.loads(raw[0])
 
     async def read(self, requested):
-        async for id, revs, *_ in requested:
-            raw_tree = await self._db.fetch_one(READ, {'id': id})
-            rev_tree = self._decode_tree(raw_tree[0])
-            for branch in read_docs(id, revs, rev_tree):
-                body = branch.leaf_doc_ptr
-                if body is not None:
-                    body = await self._fetch_body(READ_DOC, body)
-                yield Document(id, branch.leaf_rev_num, branch.path, body)
+        async for args in requested:
+            async for doc in self._read_one(*args):
+                yield doc
 
-    async def _fetch_body(self, query, id):
-        raw_result = await self._db.fetch_one(query, values={'id': id})
-        return json.loads(raw_result[0])
+    async def _read_one(self, id, revs, att_names=None, atts_since=None):
+        raw_tree = await self._db.fetch_one(READ, {'id': id})
+        rev_tree = self._decode_tree(raw_tree[0])
+        for branch in read_docs(id, revs, rev_tree):
+            values = {'id': branch.leaf_doc_ptr}
+            try:
+                body_raw, att_raw = await self._db.fetch_one(READ_DOC, values)
+            except TypeError:
+                body, atts = None, None
+            else:
+                body = json.loads(body_raw)
+                store = self._decode_att_store(att_raw)
+                atts, todo = store.read(branch, att_names, atts_since)
+                for name, att in todo:
+                    atts[name] = SQLAttachment(self._db, att)
+            yield Document(id, branch.leaf_rev_num, branch.path, body, atts)
 
     async def ensure_full_commit(self):
         # no-op, all writes are immediately committed

@@ -49,7 +49,6 @@ class AttachmentStore(dict):
             if name not in new_attachments:
                 old.append(att.data_ptr)
                 del self[name]
-        self.update(done)
 
         # let the caller add the actually new items to the database, as that
         # requires database-specific logic

@@ -111,7 +111,6 @@ class InMemoryDatabase(AsyncDatabaseMixin):
             yield from self._read_doc(id, branch, att_names, atts_since)
 
     def _read_doc(self, id, branch, att_names, atts_since):
-        rev_num = branch.leaf_rev_num
         try:
             doc, att_store = branch.leaf_doc_ptr
         except TypeError:
@@ -120,4 +119,4 @@ class InMemoryDatabase(AsyncDatabaseMixin):
             atts, todo = att_store.read(branch, att_names, atts_since)
             for name, info in todo:
                 atts[name] = InMemoryAttachment(info.meta, info.data_ptr)
-        yield Document(id, rev_num, branch.path, doc, atts)
+        yield Document(id, branch.leaf_rev_num, branch.path, doc, atts)
