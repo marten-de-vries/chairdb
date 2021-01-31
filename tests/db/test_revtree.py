@@ -14,7 +14,7 @@ def validate_rev_tree(tree):
 
 
 def merge_and_update(tree, doc_rev_num, doc_path, doc_ptr, revs_limit=1000):
-    full_path, old_i = tree.merge_with_path(doc_rev_num, doc_path)
+    full_path, _, old_i = tree.merge_with_path(doc_rev_num, doc_path)
     assert full_path
     tree.update(doc_rev_num, full_path, doc_ptr, old_i, revs_limit)
 

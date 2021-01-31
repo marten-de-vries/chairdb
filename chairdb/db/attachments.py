@@ -34,23 +34,26 @@ class AttachmentStore(dict):
         ))
 
     def merge(self, new_attachments):
-        done, todo = {}, []
+        done, old, new = {}, [], []
 
         # overwrite stubs
         for name, new_att in new_attachments.items():
             if new_att.is_stub:
                 done[name] = self._reuse_record(name, new_att)
             else:
-                todo.append((name, new_att))
+                new.append((name, new_att))
 
-        # we delay updates so we don't change anything when an exception is
-        # raised above. Also, this way we get rid of removed attachments fast.
-        self.clear()
+        # we delay updates until now so we don't change anything when an
+        # exception is raised above.
+        for name, att in list(self.items()):
+            if name not in new_attachments:
+                old.append(att.data_ptr)
+                del self[name]
         self.update(done)
 
         # let the caller add the actually new items to the database, as that
         # requires database-specific logic
-        return todo
+        return old, new
 
     def _reuse_record(self, name, new_att):
         try:

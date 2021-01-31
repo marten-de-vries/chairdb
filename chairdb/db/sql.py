@@ -4,7 +4,8 @@ import json
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
                      build_change, read_docs)
 from .revtree import RevisionTree, Branch
-from .datatypes import Document
+from .attachments import AttachmentStore, AttachmentRecord
+from .datatypes import Document, AttachmentMetadata
 from ..utils import as_json
 
 TABLE_CREATE = [
@@ -18,7 +19,7 @@ TABLE_CREATE = [
         body JSON,
         attachments JSON
     )""",
-    """CREATE TABLE attachments (
+    """CREATE TABLE attachment_chunks (
         id INTEGER PRIMARY KEY,
         data BLOB
     )""",
@@ -44,9 +45,16 @@ WRITE_LOCAL = "INSERT INTO local_documents VALUES (:id, :document)"
 WRITE = """INSERT OR REPLACE INTO revision_trees
 VALUES (NULL, :id, :rev_tree)"""
 
-WRITE_DOC = "INSERT INTO documents VALUES (NULL, :body, NULL)"
+WRITE_DOC = "INSERT INTO documents VALUES (NULL, :body, :attachments)"
 DELETE_DOC = "DELETE FROM documents WHERE id=:id"
-READ_DOC = "SELECT body FROM documents WHERE id=:id"
+READ_DOC = "SELECT body, attachments FROM documents WHERE id=:id"
+# default value of '{}'
+STORE_OR_NEW = """SELECT IFNULL(max(attachments), '{}')
+FROM documents WHERE id=:id"""
+
+WRITE_CHUNK = "INSERT INTO attachment_chunks VALES (NULL, :data)"
+DELETE_CHUNK = "REMOVE FROM attachment_chunks WHERE id=:id"
+READ_CHUNK = "SELECT data FROM attachment_chunks WHERE id=:id"
 
 READ_LOCAL = "SELECT document FROM local_documents WHERE id=:id"
 
@@ -111,20 +119,51 @@ class SQLDatabase(ContinuousChangesMixin):
 
     async def _write_doc(self, doc):
         tree = await self._revs_tree(doc.id)
-        full_path, old_index = tree.merge_with_path(doc.rev_num, doc.path)
+        full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
         if not full_path:
             return
-        if old_index is not None:
-            old_doc_ptr = tree[old_index].leaf_doc_ptr
-            await self._db.execute(DELETE_DOC, {'id': old_doc_ptr})
-        values = {'body': as_json(doc.body)}
-        doc_ptr = await self._db.execute(WRITE_DOC, values)
-        # TODO: revs limit
-        tree.update(doc.rev_num, full_path, doc_ptr, old_index)
+        # create new ptr
+        doc_ptr = await self._create_doc_ptr(doc, old_ptr)
+        # clean up the old one
+        await self._db.execute(DELETE_DOC, {'id': old_ptr})
+        # then update the rev tree
+        tree.update(doc.rev_num, full_path, doc_ptr, old_i)
         values = {'id': doc.id, 'rev_tree': as_json(tree)}
         await self._db.execute(WRITE, values)
 
         self._updated()
+
+    async def _create_doc_ptr(self, doc, old_ptr):
+        doc_ptr = None
+        if not doc.is_deleted:
+            att_store = await self._att_store(old_ptr)
+            old, new = att_store.merge(doc.attachments)
+            for data_ptr in old:
+                await self._db.executemany(DELETE_CHUNK, [{'id': id}
+                                                          for id in data_ptr])
+            for name, att in new:
+                # TODO: run in parallel?
+                data_ptr = []
+                async for chunk in att:
+                    values = {'data': chunk}
+                    chunk_ptr = await self._db.execute(WRITE_CHUNK, values)
+                    data_ptr.append(chunk_ptr)
+                att_store.add(name, att.metadata, data_ptr)
+
+            values = {'body': as_json(doc.body),
+                      'attachments': as_json(att_store)}
+            doc_ptr = await self._db.execute(WRITE_DOC, values)
+        return doc_ptr
+
+    async def _att_store(self, ptr):
+        store = await self._db.fetch_one(STORE_OR_NEW, values={'id': ptr})
+        return self._decode_att_store(store[0])
+
+    def _decode_att_store(self, store):
+        result = AttachmentStore()
+        for name, rec in json.loads(store).items():
+            result[name] = AttachmentRecord(AttachmentMetadata(rec[0]), rec[1])
+        return result
 
     async def read_local(self, id):
         with contextlib.suppress(TypeError):

@@ -57,13 +57,13 @@ class InMemoryDatabase(AsyncDatabaseMixin):
         except KeyError:
             tree, last_update_seq = RevisionTree(), None
 
-        full_path, old_index = tree.merge_with_path(doc.rev_num, doc.path)
+        full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
         if not full_path:
             return  # document already in the database.
 
-        doc_ptr = self._create_doc_ptr(doc, tree, old_index)
+        doc_ptr = self._create_doc_ptr(doc, old_ptr)
         # insert or replace in the rev tree
-        tree.update(doc.rev_num, full_path, doc_ptr, old_index,
+        tree.update(doc.rev_num, full_path, doc_ptr, old_i,
                     self.revs_limit_sync)
 
         self.update_seq_sync += 1
@@ -78,18 +78,21 @@ class InMemoryDatabase(AsyncDatabaseMixin):
         # Let superclass(es) know stuff changed
         self._updated()
 
-    def _create_doc_ptr(self, doc, tree, old_index):
+    def _create_doc_ptr(self, doc, old_ptr):
         """A doc_ptr is a (body, attachments) tuple for the in-memory case."""
 
         doc_ptr = None
         if not doc.is_deleted:
             try:
-                _, att_store = tree[old_index].leaf_doc_ptr
+                _, att_store = old_ptr
             except TypeError:
                 att_store = AttachmentStore()
-            todo = att_store.merge(doc.attachments)
-            for name, attachment in todo:
+            _, new = att_store.merge(doc.attachments)
+            for name, attachment in new:
+                # first read
                 data_ptr = b''.join(attachment)
+                # then store. In that order, or attachment.meta isn't
+                # necessarily up-to-date yet
                 att_store.add(name, attachment.meta, data_ptr)
             doc_ptr = (doc.body, att_store)
         return doc_ptr
