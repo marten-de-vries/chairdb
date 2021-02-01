@@ -4,15 +4,20 @@ import re
 MULTIPART_REGEX = 'multipart/(?:mixed|related); boundary="?([^"$]+)"?$'
 
 
-class MultipartResponseParser:
+class MultipartStreamParser:
     """Makes it easy to parse a httpx stream multipart response in async
     fashion. It takes the response as constructor argument, and when (async)
     iterated over it gives you Part-s.
 
+    Also compatible with a Starlette request.
+
     """
-    def __init__(self, response):
-        self.input = response.aiter_bytes()
-        self.parser = MultipartParser(response.headers['Content-Type'])
+    def __init__(self, stream):
+        try:
+            self.input = stream.aiter_bytes()
+        except AttributeError:
+            self.input = stream.stream()
+        self.parser = MultipartParser(stream.headers['Content-Type'])
 
     async def continue_parsing(self):
         self.parser.feed(await self.input.__anext__())

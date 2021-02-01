@@ -18,30 +18,54 @@ async def sql_target():
 
 
 @pytest.mark.asyncio
-async def test_replicate_multi(sql_target):
-    # guarantee stable replication id
-    target = InMemoryDatabase(id='test')
+@pytest.fixture
+async def brassbandwirdum():
     async with HTTPDatabase('http://localhost:5984/brassbandwirdum',
                             credentials=('marten', 'test')) as source:
-        # first time
-        pprint.pprint(await replicate(source, target))
-        # second time, should go much faster
-        assert (await replicate(source, target))['ok']
+        yield source
 
+
+@pytest.mark.asyncio
+@pytest.fixture
+async def activiteitenweger():
     async with HTTPDatabase('http://localhost:5984/activiteitenweger',
                             credentials=('marten', 'test')) as source2:
-        await replicate(source2, target)
+        yield source2
 
-        async with HTTPDatabase('http://test/test', app=app) as local_server:
-            result = await replicate(target, local_server, create_target=True)
-            assert result['ok']
-            result2 = await replicate(local_server, sql_target)
-            assert result2['ok']
-            result3 = await replicate(local_server, sql_target)
-            assert result3['ok']
-        target2 = InMemoryDatabase(id='another-test')
-        result4 = await replicate(sql_target, target2)
-        assert result4['ok']
+
+@pytest.mark.asyncio
+@pytest.fixture
+async def local_server():
+    async with HTTPDatabase('http://test/test', app=app) as server:
+        yield server
+
+
+@pytest.mark.asyncio
+async def test_replicate_multi(sql_target, brassbandwirdum, activiteitenweger,
+                               local_server):
+    # guarantee stable replication id
+    target = InMemoryDatabase(id='test')
+    # first time
+    pprint.pprint(await replicate(brassbandwirdum, target))
+    # second time, should go much faster
+    assert (await replicate(brassbandwirdum, target))['ok']
+    # another database
+    await replicate(activiteitenweger, target)
+
+    # test local server as target
+    result = await replicate(target, local_server, create_target=True)
+    assert result['ok']
+    # and as source (with sql as target)
+    result2 = await replicate(local_server, sql_target)
+    assert result2['ok']
+    # again
+    result3 = await replicate(local_server, sql_target)
+    assert result3['ok']
+
+    # use sql as source
+    target2 = InMemoryDatabase(id='another-test')
+    result4 = await replicate(sql_target, target2)
+    assert result4['ok']
 
 
 @pytest.mark.asyncio

@@ -92,8 +92,13 @@ def couchdb_json_to_doc(json, id=None):
     """
     id = json.pop('_id', id)
     # default to None for local docs:
-    json.pop('_rev', None)
-    revs = json.pop('_revisions', None)
+    try:
+        rev_num, rev_hash = parse_rev(json['_rev'])
+    except KeyError:
+        revs_default = None
+    else:
+        revs_default = {'start': rev_num, 'ids': [rev_hash]}
+    revs = json.pop('_revisions', revs_default)
     body = None if json.get('_deleted') else json
     todo = []
     if id.startswith('_local/'):
@@ -136,18 +141,42 @@ class InMemoryAttachment(typing.NamedTuple):
         yield self.data  # async API
 
 
-def doc_to_couchdb_json(doc):
+async def doc_to_couchdb_json(doc):
     if isinstance(doc, LocalDocument):
         json = {'_id': f'_local/{doc.id}', '_rev': rev(0, '1')}
     else:
         r = rev(doc.rev_num, doc.path[0])
         revs = {'start': doc.rev_num, 'ids': doc.path}
         json = {'_id': doc.id, '_rev': r, '_revisions': revs}
+        # TODO: don't serialize big attachments but handle them differently
+        # somehow...
+        if doc.attachments:
+            json['_attachments'] = await generate_attachments_json(doc)
+
     if doc.is_deleted:
         json['_deleted'] = True
     else:
         json.update(doc.body)
     return json
+
+
+async def generate_attachments_json(doc):
+    atts = {}
+    for key, att in doc.attachments.items():
+        atts[key] = {
+            'content_type': att.meta.content_type,
+            'digest': att.meta.digest,
+            'length': att.meta.length,
+            'revpos': att.meta.rev_pos,
+        }
+        if att.is_stub:
+            atts[key]['stub'] = True
+        else:
+            data = bytearray()
+            async for chunk in att:
+                data.extend(chunk)
+            atts[key]['data'] = base64.b64encode(data).decode('ascii')
+    return atts
 
 
 def rev(rev_num, rev_hash):

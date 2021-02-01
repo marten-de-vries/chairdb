@@ -14,14 +14,16 @@ from starlette.routing import Route
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import uuid
 
 from ..utils import (async_iter, peek, as_json, json_object_inner,
                      parse_json_stream, rev, couchdb_json_to_doc, parse_rev,
                      doc_to_couchdb_json, json_array_inner, LocalDocument,
-                     combine)
+                     combine, to_list)
 from ..db.datatypes import NotFound
+from ..multipart import MultipartStreamParser
 from .utils import JSONResp, parse_query_arg
 
 logger = logging.getLogger(__name__)
@@ -173,8 +175,8 @@ async def bulk_docs(request):
 
 async def write_all(db, docs):
     writes = []
-    for json in docs:
-        doc, todo = couchdb_json_to_doc(json)
+    for json_doc in docs:
+        doc, todo = couchdb_json_to_doc(json_doc)
         assert not todo
         if isinstance(doc, LocalDocument):
             await db.write_local(doc.id, doc.body)
@@ -245,7 +247,7 @@ async def bulk_get_json(db, req, local_docs):
     local_results = await asyncio.gather(local_reads)
     # TODO: something more gradual maybe?
     async for doc in combine(local_results, db.read(req)):
-        json = doc_to_couchdb_json(doc)
+        json = await doc_to_couchdb_json(doc)
         yield as_json({'docs': [{'ok': json}], 'id': doc.id})
 
 
@@ -257,9 +259,14 @@ class DocumentEndpoint(HTTPEndpoint):
         if doc_id.startswith('_local/'):
             local_id = doc_id[len('_local/'):]
             doc = await db.read_local(local_id)
-            resp = async_iter([LocalDocument(local_id, doc)])
+            # TODO: cleanup
+            if not doc:
+                resp = async_iter([NotFound()])
+            else:
+                resp = async_iter([LocalDocument(local_id, doc)])
         else:
             revs = self._parse_revs(request)
+            # TODO: add more args
             resp = db.read(async_iter([(doc_id, revs)]))
             if not parse_query_arg(request, 'revs', default=False):
                 logger.warn('revs=true not requested, but we do it anyway!')
@@ -276,7 +283,7 @@ class DocumentEndpoint(HTTPEndpoint):
             generator = self._multipart_response(resp_orig, boundary)
             return StreamingResponse(generator, media_type=mt)
         else:
-            return JSONResp(doc_to_couchdb_json(first_two[0]))
+            return JSONResp(await doc_to_couchdb_json(first_two[0]))
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -295,18 +302,27 @@ class DocumentEndpoint(HTTPEndpoint):
     async def _multipart_response(self, items, boundary):
         async for item in items:
             yield f'--{boundary}\r\nContent-Type: application/json\r\n\r\n'
-            yield f'{as_json(doc_to_couchdb_json(item))}\r\n'
+            yield f'{as_json(await doc_to_couchdb_json(item))}\r\n'
         yield f'--{boundary}--'
 
     async def put(self, request):
         doc_id = request.path_params['id']
-        if not doc_id.startswith('_local/'):
-            return JSONResp(DOC_NOT_FOUND, 404)  # FIXME
-        doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
-        # TODO: handle multipart instead of just asserting like below
-        assert not todo
+        if request.headers['Content-Type'] == 'application/json':
+            doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
+            assert not todo
+        else:
+            parser = MultipartStreamParser(request).__aiter__()
+            first = await parser.__anext__()
+            assert first.headers == {'Content-Type': 'application/json'}
+            doc_json = json.loads(await first.aread())
+            doc, todo = couchdb_json_to_doc(doc_json)
+            # TODO: add attachments in 'todo' to the doc & read them
 
-        await get_db(request).write_local(doc.id, doc.body)
+        if isinstance(doc, LocalDocument):
+            await get_db(request).write_local(doc.id, doc.body)
+        else:
+            assert not parse_query_arg(request, 'new_edits', default=True)
+            await to_list(get_db(request).write(async_iter([doc])))
 
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 

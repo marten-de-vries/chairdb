@@ -32,7 +32,7 @@ SUCCESS = {
 
 SESSION = {
     "ok": True,
-    "userCtx": {"name": None, "roles":["_admin"]},
+    "userCtx": {"name": None, "roles": ["_admin"]},
 }
 
 
@@ -68,7 +68,6 @@ def all_dbs(request):
 
 def session(request):
     return JSONResp(SESSION)
-
 
 
 class DBLoaderMiddleware:

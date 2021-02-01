@@ -7,7 +7,7 @@ import typing
 
 from .datatypes import (Unauthorized, Forbidden, NotFound, Change, Missing,
                         AttachmentMetadata)
-from .multipart import MultipartResponseParser
+from ..multipart import MultipartStreamParser
 from ..utils import (as_json, parse_json_stream, parse_rev, json_array_inner,
                      rev, couchdb_json_to_doc, doc_to_couchdb_json,
                      json_object_inner)
@@ -133,7 +133,6 @@ class HTTPDatabase(httpx.AsyncClient):
             yield part.encode('UTF-8')
 
     async def write(self, docs):
-        # TODO: attachments
         header = '{"new_edits":false,"docs":['
         docs_json = self._bulk_docs_json(docs)
         body = json_array_inner(header, docs_json, lambda: ']}\n')
@@ -147,7 +146,7 @@ class HTTPDatabase(httpx.AsyncClient):
 
     async def _bulk_docs_json(self, docs):
         async for doc in docs:
-            yield as_json(doc_to_couchdb_json(doc))
+            yield as_json(await doc_to_couchdb_json(doc))
 
     async def write_local(self, id, doc):
         await self._request('PUT', f'/_local/{id}', json=doc)
@@ -226,9 +225,9 @@ class HTTPDatabase(httpx.AsyncClient):
                     yield doc
 
     async def _read_multipart(self, resp):
-        async for part in MultipartResponseParser(resp):
+        async for part in MultipartStreamParser(resp):
             if part.headers['Content-Type'].startswith('multipart/related'):
-                subparser = MultipartResponseParser(part).__aiter__()
+                subparser = MultipartStreamParser(part).__aiter__()
                 sub = await subparser.__anext__()
                 assert sub.headers == {'Content-Type': 'application/json'}
                 doc, todo = couchdb_json_to_doc(json.loads(await sub.aread()))
@@ -236,10 +235,11 @@ class HTTPDatabase(httpx.AsyncClient):
                 for name, meta in todo:
                     futures[name] = asyncio.get_event_loop().create_future()
                     doc.attachments[name] = HTTPAttachment(meta, futures[name])
+                yield doc
+                # TODO: does the following need to happen in a separate task?
                 async for att in subparser:
                     _, name, _ = att.headers['Content-Disposition'].split('"')
                     futures[name].set_result(att.aiter_bytes())
-                yield doc
             else:
                 assert part.headers == {'Content-Type': 'application/json'}
                 doc, todo = couchdb_json_to_doc(json.loads(await part.aread()))
