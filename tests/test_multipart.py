@@ -20,7 +20,7 @@ def test_parser_normally():
     headers = {'Content-Type': 'application/json'}
     assert parser.results == [{
         'headers': headers,
-        'body': b'{}\r\n',
+        'body': b'{}',
         'done': True
     }]
 

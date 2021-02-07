@@ -3,6 +3,7 @@ starlette
 httpx
 ijson
 databases
+aiostream
 aiosqlite
 uvicorn
 aiofiles

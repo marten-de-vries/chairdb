@@ -1,31 +1,18 @@
 import contextlib
-
-import asyncio
-import httpx
 import json
-import typing
 
-from .datatypes import (Unauthorized, Forbidden, NotFound, Change, Missing,
-                        AttachmentMetadata)
+import httpx
+from aiostream import stream
+
+from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from ..multipart import MultipartStreamParser
 from ..utils import (as_json, parse_json_stream, parse_rev, json_array_inner,
                      rev, couchdb_json_to_doc, doc_to_couchdb_json,
-                     json_object_inner)
+                     json_object_inner, add_http_attachments)
 
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}
-MAX_PARALLEL_READS = 10
-FIRST_DONE = asyncio.FIRST_COMPLETED
-
-
-class HTTPAttachment(typing.NamedTuple):
-    meta: AttachmentMetadata
-    iterator: asyncio.Future
-    is_stub: bool = False
-
-    async def __aiter__(self):
-        async for chunk in await self.iterator:
-            yield chunk
+MAX_CONNECTIONS = 10
 
 
 class HTTPDatabase(httpx.AsyncClient):
@@ -42,7 +29,9 @@ class HTTPDatabase(httpx.AsyncClient):
     # TODO: batching of _changes, _revs_diff, _bulk_docs?
 
     def __init__(self, url, credentials=None, *args, **kwargs):
-        super().__init__(base_url=url, *args, **kwargs)
+        limits = httpx.Limits(max_keepalive_connections=MAX_CONNECTIONS // 2,
+                              max_connections=MAX_CONNECTIONS)
+        super().__init__(base_url=url, limits=limits, *args, **kwargs)
 
         self._credentials = None
         if credentials:
@@ -151,47 +140,14 @@ class HTTPDatabase(httpx.AsyncClient):
     async def write_local(self, id, doc):
         await self._request('PUT', f'/_local/{id}', json=doc)
 
-    # FOR EASIER DEBUGGING:
-    # async def read(self, requested):
-    #     async for id, *args in requested:
-    #         params = self._read_params(id, *args)
-    #         async for doc in self._read_docs(id, params):
-    #             yield doc
-
     async def read(self, requested):
-        # the method for reading the docs in parallel is inspired by:
-        # https://stackoverflow.com/a/55317623
-
-        queue = asyncio.Queue()
-        read_task = asyncio.create_task(self._read_task(requested, queue))
-
-        # keep reading until done, but also quickly return results as they
-        # become available.
-        while True:
-            get_task = asyncio.create_task(queue.get())
-            done, pending = await asyncio.wait([read_task, get_task],
-                                               return_when=FIRST_DONE)
-            if get_task in done:
-                yield await get_task
-            if read_task in done:
-                get_task.cancel()
-                break
-        # reading is done, empty out the queue.
-        while not queue.empty():
-            yield queue.get_nowait()
-
-    async def _read_task(self, requested, queue):
-        # read MAX_PARALLEL_READS docs at the same time. Results are put into
-        # 'queue'
-        tasks = set()
+        readers = []
         async for id, *args in requested:
             params = self._read_params(id, *args)
-            docs = self._read_docs(id, params)
-
-            tasks.add(asyncio.create_task(self._drain_into(docs, queue)))
-            while len(tasks) >= MAX_PARALLEL_READS:
-                _, tasks = await asyncio.wait(tasks, return_when=FIRST_DONE)
-        await asyncio.wait(tasks)
+            readers.append(self._read_docs(id, params))
+        async with stream.merge(*readers).stream() as merged_stream:
+            async for doc in merged_stream:
+                yield doc
 
     def _read_params(self, id, revs, att_names=None, atts_since=None):
         assert att_names is None  # TODO
@@ -200,51 +156,38 @@ class HTTPDatabase(httpx.AsyncClient):
             params['open_revs'] = 'all'
         elif revs != 'winner':
             params['open_revs'] = as_json([rev(*r) for r in revs])
-        if atts_since:
+        if atts_since is not None:
             params['atts_since'] = as_json([rev(*r) for r in atts_since])
         return params
 
-    async def _drain_into(self, docs, queue):
-        async for doc in docs:
-            await queue.put(doc)
-
     async def _read_docs(self, id, params):
         async with self._stream('GET', '/' + id, params=params) as resp:
-            if resp.headers['Content-Type'] == 'application/json':
-                await resp.aread()
-                if resp.status_code == httpx.codes.NOT_FOUND:
-                    yield NotFound(resp.json())
-                else:
-                    assert resp.status_code == httpx.codes.OK
-                    doc, todo = couchdb_json_to_doc(resp.json())
-                    assert not todo
-                    yield doc
+            if resp.status_code == httpx.codes.NOT_FOUND:
+                yield NotFound(json.loads(await resp.aread()))
             else:
                 assert resp.status_code == httpx.codes.OK
-                async for doc in self._read_multipart(resp):
-                    yield doc
 
-    async def _read_multipart(self, resp):
-        async for part in MultipartStreamParser(resp):
-            if part.headers['Content-Type'].startswith('multipart/related'):
-                subparser = MultipartStreamParser(part).__aiter__()
-                sub = await subparser.__anext__()
-                assert sub.headers == {'Content-Type': 'application/json'}
-                doc, todo = couchdb_json_to_doc(json.loads(await sub.aread()))
-                futures = {}
-                for name, meta in todo:
-                    futures[name] = asyncio.get_event_loop().create_future()
-                    doc.attachments[name] = HTTPAttachment(meta, futures[name])
-                yield doc
-                # TODO: does the following need to happen in a separate task?
-                async for att in subparser:
-                    _, name, _ = att.headers['Content-Disposition'].split('"')
-                    futures[name].set_result(att.aiter_bytes())
-            else:
-                assert part.headers == {'Content-Type': 'application/json'}
-                doc, todo = couchdb_json_to_doc(json.loads(await part.aread()))
-                assert not todo
-                yield doc
+                if 'open_revs' in params:
+                    # multiple docs
+                    assert resp.status_code == httpx.codes.OK
+                    async for part in MultipartStreamParser(resp):
+                        yield await self._read_single_doc(part)
+                else:
+                    yield await self._read_single_doc(resp)
+
+    async def _read_single_doc(self, resp):
+        if resp.headers['Content-Type'].startswith('multipart/'):
+            parser = MultipartStreamParser(resp).__aiter__()
+            part = await parser.__anext__()
+            assert part.headers == {'Content-Type': 'application/json'}
+            doc, todo = couchdb_json_to_doc(json.loads(await part.aread()))
+            add_http_attachments(doc, todo, parser)
+            return doc
+        else:
+            assert resp.headers['Content-Type'] == 'application/json'
+            doc, todo = couchdb_json_to_doc(json.loads(await resp.aread()))
+            assert not todo
+            return doc
 
     async def read_local(self, id):
         doc = await self._read_docs('_local/' + id, {}).__anext__()

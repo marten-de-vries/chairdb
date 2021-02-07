@@ -21,7 +21,7 @@ import uuid
 from ..utils import (async_iter, peek, as_json, json_object_inner,
                      parse_json_stream, rev, couchdb_json_to_doc, parse_rev,
                      doc_to_couchdb_json, json_array_inner, LocalDocument,
-                     combine, to_list)
+                     combine, to_list, add_http_attachments)
 from ..db.datatypes import NotFound
 from ..multipart import MultipartStreamParser
 from .utils import JSONResp, parse_query_arg
@@ -205,6 +205,7 @@ async def local_docs_json(db):
 
 # bulk get
 def bulk_get(request):
+    # TODO: attachments
     if not parse_query_arg(request, 'revs', default=False):
         logger.warn('revs=true not requested, but we do it anyway!')
     local_docs = []
@@ -253,9 +254,15 @@ async def bulk_get_json(db, req, local_docs):
 
 # /doc
 class DocumentEndpoint(HTTPEndpoint):
+    def doc_id(self, request):
+        """Overridden by subclasses"""
+
+        return request.path_params['id']
+
+    # TODO: attachments
     async def get(self, request):
         db = get_db(request)
-        doc_id = request.path_params['id']
+        doc_id = self.doc_id(request)
         if doc_id.startswith('_local/'):
             local_id = doc_id[len('_local/'):]
             doc = await db.read_local(local_id)
@@ -306,7 +313,7 @@ class DocumentEndpoint(HTTPEndpoint):
         yield f'--{boundary}--'
 
     async def put(self, request):
-        doc_id = request.path_params['id']
+        doc_id = self.doc_id(request)
         if request.headers['Content-Type'] == 'application/json':
             doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
             assert not todo
@@ -316,7 +323,7 @@ class DocumentEndpoint(HTTPEndpoint):
             assert first.headers == {'Content-Type': 'application/json'}
             doc_json = json.loads(await first.aread())
             doc, todo = couchdb_json_to_doc(doc_json)
-            # TODO: add attachments in 'todo' to the doc & read them
+            add_http_attachments(doc, todo, parser)
 
         if isinstance(doc, LocalDocument):
             await get_db(request).write_local(doc.id, doc.body)
@@ -327,7 +334,7 @@ class DocumentEndpoint(HTTPEndpoint):
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 
     async def delete(self, request):
-        doc_id = request.path_params['id']
+        doc_id = self.doc_id(request)
         assert doc_id.startswith('_local/')
 
         await get_db(request).write_local(doc_id[len('_local/'):], None)
@@ -335,6 +342,43 @@ class DocumentEndpoint(HTTPEndpoint):
 
     def copy(sef, request):
         raise NotImplementedError()
+
+
+class DesignDocumentEndpoint(DocumentEndpoint):
+    def doc_id(self, request):
+        return '_design/' + super().doc_id(request)
+
+
+class LocalDocumentEndpoint(DocumentEndpoint):
+    def doc_id(self, request):
+        return '_local/' + super().doc_id(request)
+
+
+class AttachmentEndpoint(HTTPEndpoint):
+    def info(self, request):
+        return request.path_params['id'], request.path_params['attachment']
+
+    async def get(self, request):
+        # TODO: range requests - including an efficient way to query them?
+        id, attachment = self.info(request)
+
+        args = async_iter([(id, 'winner', [attachment])])
+        doc = await get_db(request).read(args).__anext__()
+
+        att = doc.attachments[attachment]
+        resp = StreamingResponse(att, headers={
+            'Content-Type': att.meta.content_type,
+            'Content-Length': str(att.meta.length),
+            'ETag': att.meta.digest,
+            'Cache-Control': 'must-revalidate',
+        })
+        return resp
+
+
+class DesignAttachmentEndpoint(AttachmentEndpoint):
+    def info(self, request):
+        id, attachment = super().info(request)
+        return '_design/' + id, attachment
 
 
 def build_db_app(**opts):
@@ -353,5 +397,9 @@ def build_db_app(**opts):
         Route('/_bulk_docs', bulk_docs, methods=['POST']),
         Route('/_local_docs', local_docs),
         Route('/_bulk_get', bulk_get, methods=['POST']),
-        Route('/{id:path}', DocumentEndpoint),
+        Route('/_design/{id}', DesignDocumentEndpoint),
+        Route('/_design/{id}/{attachment:path}', DesignAttachmentEndpoint),
+        Route('/_local/{id}', LocalDocumentEndpoint),
+        Route('/{id}', DocumentEndpoint),
+        Route('/{id}/{attachment:path}', AttachmentEndpoint),
     ], **opts)

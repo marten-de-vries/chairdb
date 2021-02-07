@@ -1,9 +1,11 @@
 import ijson
 
+import asyncio
 import base64
 import contextlib
 import json
 import typing
+import zlib
 
 from .db.datatypes import (Document, AbstractDocument, AttachmentStub,
                            AttachmentMetadata)
@@ -177,6 +179,41 @@ async def generate_attachments_json(doc):
                 data.extend(chunk)
             atts[key]['data'] = base64.b64encode(data).decode('ascii')
     return atts
+
+
+def add_http_attachments(doc, todo, parser):
+    futures = {}
+    for name, meta in todo:
+        futures[name] = asyncio.get_event_loop().create_future()
+        doc.attachments[name] = HTTPAttachment(meta, futures[name])
+    asyncio.create_task(parse_atts(futures, parser))
+
+
+class HTTPAttachment(typing.NamedTuple):
+    meta: AttachmentMetadata
+    part: asyncio.Future
+    is_stub: bool = False
+
+    async def __aiter__(self):
+        attachment = await self.part
+        aiterator = attachment.aiter_bytes()
+        if attachment.headers.get('Content-Encoding') == 'gzip':
+            aiterator = self._unzip(aiterator)
+        async for chunk in aiterator:
+            if chunk:
+                yield chunk
+
+    async def _unzip(self, chunks):
+        decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        async for chunk in chunks:
+            yield decompressor.decompress(chunk)
+        yield decompressor.flush()
+
+
+async def parse_atts(futures, parser):
+    async for att in parser:
+        _, name, _ = att.headers['Content-Disposition'].split('"')
+        futures[name].set_result(att)
 
 
 def rev(rev_num, rev_hash):

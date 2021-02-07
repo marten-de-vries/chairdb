@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import re
 
@@ -18,8 +19,16 @@ class MultipartStreamParser:
         except AttributeError:
             self.input = stream.stream()
         self.parser = MultipartParser(stream.headers['Content-Type'])
+        self.parsing_task = None
 
     async def continue_parsing(self):
+        # join waiting for an existing 'parsing request'. If that's not
+        # possible, start a new one.
+        if not self.parsing_task or self.parsing_task.done():
+            self.parsing_task = asyncio.create_task(self._continue_parsing())
+        await self.parsing_task
+
+    async def _continue_parsing(self):
         self.parser.feed(await self.input.__anext__())
 
     async def __aiter__(self):
@@ -78,7 +87,7 @@ class MultipartParser:
         match = re.match(MULTIPART_REGEX, content_type)
         assert match
 
-        self.boundary = b'--' + match[1].encode('UTF-8')
+        self.boundary = b'\r\n--' + match[1].encode('UTF-8')
 
         self.state = self.START
         self.cache = bytearray()
@@ -99,7 +108,8 @@ class MultipartParser:
         self.state()
 
     def START(self):
-        assert self._data_before(self.boundary) == b''
+        # at start there's no \r\n in the boundary
+        assert self._data_before(self.boundary[2:]) == b''
         self.change_state(self.READ_BOUNDARY_END)
 
     def READ_BOUNDARY_END(self):

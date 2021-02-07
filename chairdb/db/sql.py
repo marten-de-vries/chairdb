@@ -5,7 +5,7 @@ from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
                      build_change, read_docs)
 from .revtree import RevisionTree, Branch
 from .attachments import AttachmentStore, AttachmentRecord
-from .datatypes import Document, AttachmentMetadata
+from .datatypes import Document, AttachmentMetadata, NotFound
 from ..utils import as_json
 
 TABLE_CREATE = [
@@ -52,7 +52,7 @@ READ_DOC = "SELECT body, attachments FROM documents WHERE id=:id"
 STORE_OR_NEW = """SELECT IFNULL(max(attachments), '{}')
 FROM documents WHERE id=:id"""
 
-WRITE_CHUNK = "INSERT INTO attachment_chunks VALES (NULL, :data)"
+WRITE_CHUNK = "INSERT INTO attachment_chunks VALUES (NULL, :data)"
 DELETE_CHUNK = "REMOVE FROM attachment_chunks WHERE id=:id"
 READ_CHUNK = "SELECT data FROM attachment_chunks WHERE id=:id"
 
@@ -71,7 +71,7 @@ class SQLAttachment:
 
     async def __aiter__(self):
         for chunk_ptr in self._data_ptr:
-            yield await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr})[0]
+            yield (await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr}))[0]
 
 
 # TODO: error handling
@@ -161,7 +161,7 @@ class SQLDatabase(ContinuousChangesMixin):
                     values = {'data': chunk}
                     chunk_ptr = await self._db.execute(WRITE_CHUNK, values)
                     data_ptr.append(chunk_ptr)
-                att_store.add(name, att.metadata, data_ptr)
+                att_store.add(name, att.meta, data_ptr)
 
             values = {'body': as_json(doc.body),
                       'attachments': as_json(att_store)}
@@ -174,8 +174,8 @@ class SQLDatabase(ContinuousChangesMixin):
 
     def _decode_att_store(self, store):
         result = AttachmentStore()
-        for name, rec in json.loads(store).items():
-            result[name] = AttachmentRecord(AttachmentMetadata(rec[0]), rec[1])
+        for name, (meta, ptr) in json.loads(store).items():
+            result[name] = AttachmentRecord(AttachmentMetadata(*meta), ptr)
         return result
 
     async def read_local(self, id):
@@ -184,14 +184,18 @@ class SQLDatabase(ContinuousChangesMixin):
             return json.loads(raw[0])
 
     async def read(self, requested):
-        async for args in requested:
-            async for doc in self._read_one(*args):
-                yield doc
+        async for id, *args in requested:
+            raw_tree = await self._db.fetch_one(READ, {'id': id})
+            try:
+                rev_tree = self._decode_tree(raw_tree[0])
+            except TypeError:
+                yield NotFound(id)
+            else:
+                async for doc in self._read_one(rev_tree, id, *args):
+                    yield doc
 
-    async def _read_one(self, id, revs, att_names=None, atts_since=None):
-        raw_tree = await self._db.fetch_one(READ, {'id': id})
-        rev_tree = self._decode_tree(raw_tree[0])
-        for branch in read_docs(id, revs, rev_tree):
+    async def _read_one(self, tree, id, revs, att_names=None, atts_since=None):
+        for branch in read_docs(id, revs, tree):
             values = {'id': branch.leaf_doc_ptr}
             try:
                 body_raw, att_raw = await self._db.fetch_one(READ_DOC, values)
