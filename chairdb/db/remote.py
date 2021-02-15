@@ -27,6 +27,7 @@ class HTTPDatabase(httpx.AsyncClient):
 
     """
     # TODO: batching of _changes, _revs_diff, _bulk_docs?
+    # TODO: listen to _global_changes instead of _changes?
 
     def __init__(self, url, credentials=None, *args, **kwargs):
         limits = httpx.Limits(max_keepalive_connections=MAX_CONNECTIONS // 2,

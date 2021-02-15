@@ -62,25 +62,6 @@ async def to_list(asynciterable):
     return [x async for x in asynciterable]
 
 
-async def peek(aiterable, n=2):
-    first_n = await to_list(take_n(aiterable, n))
-    return first_n, combine(first_n, aiterable)
-
-
-async def take_n(aiterable, n):
-    async for i, item in aenumerate(aiterable):
-        yield item
-        if i + 1 == n:
-            break
-
-
-async def combine(iterable, aiterable):
-    for item in iterable:
-        yield item
-    async for item in aiterable:
-        yield item
-
-
 # couchdb helpers
 
 class LocalDocument(AbstractDocument):
@@ -88,8 +69,9 @@ class LocalDocument(AbstractDocument):
 
 
 def couchdb_json_to_doc(json, id=None):
-    """Returns a (local_id, document) tuple. local_id is only defined for local
-    documents
+    """Returns a doc, todo tuple. The first is either a LocalDocument or a
+    Document, while the second contains follow: true attachments that still
+    have to be added to doc.attachments to complete the conversion.
 
     """
     id = json.pop('_id', id)
@@ -144,16 +126,13 @@ class InMemoryAttachment(typing.NamedTuple):
 
 
 async def doc_to_couchdb_json(doc):
-    if isinstance(doc, LocalDocument):
-        json = {'_id': f'_local/{doc.id}', '_rev': rev(0, '1')}
-    else:
-        r = rev(doc.rev_num, doc.path[0])
-        revs = {'start': doc.rev_num, 'ids': doc.path}
-        json = {'_id': doc.id, '_rev': r, '_revisions': revs}
-        # TODO: don't serialize big attachments but handle them differently
-        # somehow...
-        if doc.attachments:
-            json['_attachments'] = await generate_attachments_json(doc)
+    r = rev(doc.rev_num, doc.path[0])
+    revs = {'start': doc.rev_num, 'ids': doc.path}
+    json = {'_id': doc.id, '_rev': r, '_revisions': revs}
+    # TODO: don't serialize big attachments but handle them differently
+    # somehow...
+    if doc.attachments:
+        json['_attachments'] = await generate_attachments_json(doc)
 
     if doc.is_deleted:
         json['_deleted'] = True
