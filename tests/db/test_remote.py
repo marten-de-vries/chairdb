@@ -26,9 +26,9 @@ async def test_remote():  # noqa: C901
                 print(result)  # succesful writes don't return anything
             req = [
                 # three different ways...
-                ('mytest', 'all'),
-                ('mytest', 'winner'),
-                ('mytest', [(2, 'y')]),
+                ('mytest', {'revs': 'all'}),
+                ('mytest', {}),
+                ('mytest', {'revs': [(2, 'y')]}),
             ]
             async for result in db.read(async_iter(req)):
                 print(result)

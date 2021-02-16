@@ -74,7 +74,6 @@ class SQLAttachment:
             yield (await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr}))[0]
 
 
-# TODO: error handling
 class SQLDatabase(ContinuousChangesMixin):
     def __init__(self, db, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -86,7 +85,7 @@ class SQLDatabase(ContinuousChangesMixin):
         return self
 
     async def __aexit__(self, *_):
-        """TODO"""
+        """No-op for now."""
 
     @property
     def id(self):
@@ -155,7 +154,6 @@ class SQLDatabase(ContinuousChangesMixin):
                 await self._db.executemany(DELETE_CHUNK, [{'id': id}
                                                           for id in data_ptr])
             for name, att in new:
-                # TODO: run in parallel?
                 data_ptr = []
                 async for chunk in att:
                     values = {'data': chunk}
@@ -184,17 +182,18 @@ class SQLDatabase(ContinuousChangesMixin):
             return json.loads(raw[0])
 
     async def read(self, requested):
-        async for id, *args in requested:
+        async for id, opts in requested:
             raw_tree = await self._db.fetch_one(READ, {'id': id})
             try:
                 rev_tree = self._decode_tree(raw_tree[0])
             except TypeError:
                 yield NotFound(id)
             else:
-                async for doc in self._read_one(rev_tree, id, *args):
+                async for doc in self._read_one(rev_tree, id, **opts):
                     yield doc
 
-    async def _read_one(self, tree, id, revs, att_names=None, atts_since=None):
+    async def _read_one(self, tree, id, revs=None, att_names=None,
+                        atts_since=None):
         for branch in read_docs(id, revs, tree):
             values = {'id': branch.leaf_doc_ptr}
             try:

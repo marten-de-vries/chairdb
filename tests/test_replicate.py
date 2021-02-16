@@ -90,6 +90,6 @@ async def document_existance(db, doc):
     result = None
     while result != doc:
         try:
-            result = next(db.read_sync(doc.id, 'winner'))
+            result = next(db.read_sync(doc.id))
         except NotFound:
             await asyncio.sleep(0)

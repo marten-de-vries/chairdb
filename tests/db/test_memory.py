@@ -17,17 +17,17 @@ def insert_doc(db):
 
 def test_simple(db):
     doc = insert_doc(db)
-    assert list(db.read_sync('test', [(1, 'a')])) == [doc]
+    assert list(db.read_sync('test', revs=[(1, 'a')])) == [doc]
 
 
 def test_read_winner(db):
     doc = insert_doc(db)
-    assert list(db.read_sync('test', 'winner')) == [doc]
+    assert list(db.read_sync('test')) == [doc]
 
 
 def test_read_all(db):
     doc = insert_doc(db)
-    assert list(db.read_sync('test', 'all')) == [doc]
+    assert list(db.read_sync('test', revs='all')) == [doc]
 
 
 def test_revs_diff(db):
@@ -48,7 +48,7 @@ def test_changes(db):
 def test_overwrite(db):
     insert_doc(db)
     db.write_sync(Document('test', 2, ('a',), {'hello everyone'}))
-    assert list(db.read_sync('test', 'winner')) == [
+    assert list(db.read_sync('test')) == [
         Document('test', 2, ('a',), {'hello everyone'})
     ]
 
@@ -63,7 +63,7 @@ def test_linear_history(db):
     ]
     for doc in docs:
         db.write_sync(doc)
-    assert list(db.read_sync('test', 'all')) == [
+    assert list(db.read_sync('test', revs='all')) == [
         Document('test', 5, ('e', 'd', 'c', 'b', 'a'), {'hello': '4'})
     ]
 
@@ -72,7 +72,7 @@ def test_remove(db):
     insert_doc(db)
     doc2 = Document('test', 2, ('b', 'a'), body=None)
     db.write_sync(doc2)
-    assert list(db.read_sync('test', 'winner')) == [doc2]
+    assert list(db.read_sync('test')) == [doc2]
     assert list(db.changes_sync()) == [
         Change('test', seq=2, deleted=True, leaf_revs=[(2, 'b')])
     ]
@@ -81,7 +81,7 @@ def test_remove(db):
 def test_conflict(db):
     db.write_sync(Document('test', 1, ('a',), {'hello': 'world'}))
     db.write_sync(Document('test', 1, ('b',), {'hello': 'there'}))
-    assert list(db.read_sync('test', 'all')) == [
+    assert list(db.read_sync('test', revs='all')) == [
         Document('test', 1, ('b',), {'hello': 'there'}),
         Document('test', 1, ('a',), {'hello': 'world'}),
     ]
@@ -103,13 +103,13 @@ def test_old_conflict(db):
     for doc in docs:
         db.write_sync(doc)
     # make sure both leafs are in there
-    assert list(db.read_sync('test', 'all')) == [
+    assert list(db.read_sync('test', revs='all')) == [
         Document('test', 3, ('c', 'b', 'a'), {'x': 3}),
         Document('test', 2, ('d', 'a'), {'x': 4}),
     ]
 
     # make sure the older leaf is retrievable
-    assert list(db.read_sync('test', [(2, 'd')])) == [
+    assert list(db.read_sync('test', revs=[(2, 'd')])) == [
         Document('test', 2, ('d', 'a'), {'x': 4}),
     ]
 
@@ -117,7 +117,7 @@ def test_old_conflict(db):
     db.write_sync(Document('test', 4, ('e', 'c', 'b', 'a'), body=None))
 
     # check the winner is the 'old' leaf now.
-    assert list(db.read_sync('test', 'winner')) == [
+    assert list(db.read_sync('test')) == [
         Document('test', 2, ('d', 'a'), {'x': 4}),
     ]
 
@@ -125,7 +125,7 @@ def test_old_conflict(db):
     db.write_sync(Document('test', 3, ('f', 'd', 'a'), body=None))
 
     # check if the current winner is deleted - and has switched back again
-    assert list(db.read_sync('test', 'winner')) == [
+    assert list(db.read_sync('test')) == [
         Document('test', 4, ('e', 'c', 'b', 'a'), body=None),
     ]
 
@@ -144,7 +144,7 @@ def test_attachment(db):
     doc.add_attachment('text.txt', [b'Hello World!'])
     db.write_sync(doc)
 
-    new_doc = next(db.read_sync('test', 'winner'))
+    new_doc = next(db.read_sync('test'))
     assert new_doc.id == 'test'
     assert new_doc.rev_num == 1
     assert new_doc.path == ('a',)
@@ -159,7 +159,7 @@ def test_attachment(db):
     new_doc.add_attachment('test.json', [b'{}'], 'application/json+special')
     db.write_sync(new_doc)
 
-    read_doc = next(db.read_sync('test', 'winner'))
+    read_doc = next(db.read_sync('test'))
     meta2 = AttachmentMetadata(2, 'application/json+special', 2,
                                'md5-mZFLkyvTelC5g8XnyQrpOw==')
     assert read_doc.attachments == {
@@ -169,16 +169,16 @@ def test_attachment(db):
     assert all(a.is_stub for a in read_doc.attachments.values())
 
     # retrieve text.txt by name
-    read_doc2 = next(db.read_sync('test', 'winner', ['text.txt']))
+    read_doc2 = next(db.read_sync('test', att_names=['text.txt']))
     assert b''.join(read_doc2.attachments['text.txt']) == b'Hello World!'
 
     # retrieve test.json because it's newer
-    read_doc3 = next(db.read_sync('test', 'all', None, [(1, 'a')]))
+    read_doc3 = next(db.read_sync('test', revs='all', atts_since=[(1, 'a')]))
     assert b''.join(read_doc3.attachments['test.json']) == b'{}'
     assert read_doc3.attachments['text.txt'].is_stub
 
     # retrieve both
-    read_doc4 = next(db.read_sync('test', 'winner', None, []))
+    read_doc4 = next(db.read_sync('test', atts_since=[]))
     assert not any(a.is_stub for a in read_doc4.attachments.values())
     assert b''.join(read_doc3.attachments['test.json']) == b'{}'
 
@@ -223,9 +223,9 @@ async def test_async(db):
     assert len(result) == 1 and isinstance(result[0], AttributeError)
     req = [
         # three different ways...
-        ('mytest', 'all'),
-        ('mytest', 'winner'),
-        ('mytest', [(2, 'y')]),
+        ('mytest', {'revs': 'all'}),
+        ('mytest', {}),
+        ('mytest', {'revs': [(2, 'y')]}),
     ]
     assert await to_list(db.read(async_iter(req))) == [
         Document('mytest', 2, ('y', 'x',), body=None),
@@ -234,7 +234,7 @@ async def test_async(db):
         Change('mytest', seq=2, deleted=True, leaf_revs=[(2, 'y')])
     ]
     # try never-existing doc
-    errors = await to_list(db.read(async_iter([('abc', 'winner')])))
+    errors = await to_list(db.read(async_iter([('abc', {})])))
     assert len(errors) == 1 and isinstance(errors[0], NotFound)
 
     assert 'memory' in await db.id
@@ -247,12 +247,12 @@ async def test_async(db):
     new_doc = Document('csv', 1, ('a',), {})
     new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
     assert not await to_list(db.write(async_iter([new_doc])))
-    args = ('csv', 'winner', None, [])
+    args = ('csv', {"atts_since": []})
     loaded_doc = await db.read(async_iter([args])).__anext__()
     assert await to_list(loaded_doc.attachments['test.csv']) == [
         b'4,5,6'
     ]
-    stub_doc = await db.read(async_iter([('csv', 'winner')])).__anext__()
+    stub_doc = await db.read(async_iter([('csv', {})])).__anext__()
     assert stub_doc.attachments['test.csv'].is_stub
     # make sure re-inserting stub revision succeeds
     stub_doc.rev_num += 1

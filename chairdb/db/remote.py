@@ -26,9 +26,6 @@ class HTTPDatabase(httpx.AsyncClient):
     but InMemoryDatabase-s don't need it as they always exist.
 
     """
-    # TODO: batching of _changes, _revs_diff, _bulk_docs?
-    # TODO: listen to _global_changes instead of _changes?
-
     def __init__(self, url, credentials=None, *args, **kwargs):
         limits = httpx.Limits(max_keepalive_connections=MAX_CONNECTIONS // 2,
                               max_connections=MAX_CONNECTIONS)
@@ -85,7 +82,6 @@ class HTTPDatabase(httpx.AsyncClient):
         stream = self._stream('GET', '/_changes', params=params, **opts)
         async with stream as resp:
             async for c in self._parse_changes_response(resp, continuous):
-                # TODO: handle timeouts
                 deleted = c.get('deleted', False)
                 leaf_revs = [parse_rev(item['rev']) for item in c['changes']]
                 yield Change(c['id'], c['seq'], deleted, leaf_revs)
@@ -143,19 +139,19 @@ class HTTPDatabase(httpx.AsyncClient):
 
     async def read(self, requested):
         readers = []
-        async for id, *args in requested:
-            params = self._read_params(id, *args)
+        async for id, opts in requested:
+            params = self._read_params(id, **opts)
             readers.append(self._read_docs(id, params))
         async with stream.merge(*readers).stream() as merged_stream:
             async for doc in merged_stream:
                 yield doc
 
-    def _read_params(self, id, revs, att_names=None, atts_since=None):
-        assert att_names is None  # TODO
+    def _read_params(self, id, revs=None, att_names=None, atts_since=None):
+        assert att_names is None
         params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
             params['open_revs'] = 'all'
-        elif revs != 'winner':
+        elif revs is not None:
             params['open_revs'] = as_json([rev(*r) for r in revs])
         if atts_since is not None:
             params['atts_since'] = as_json([rev(*r) for r in atts_since])

@@ -17,7 +17,7 @@ async def main():
     await replicate(source=jane_db, target=server_db)
     await replicate(source=bob_db, target=server_db)
 
-    for doc in server_db.read_sync('roadside', 'all'):
+    for doc in server_db.read_sync('roadside', revs='all'):
         print(doc)
 
     server_db.write_sync(Document('roadside', 3, ('b617', '6e05', '1a9c'),
@@ -28,8 +28,8 @@ async def main():
     await replicate(source=server_db, target=jane_db)
     await replicate(source=server_db, target=bob_db)
 
-    print(next(jane_db.read_sync('roadside', 'winner')))
-    print(next(bob_db.read_sync('roadside', 'winner')))
+    print(next(jane_db.read_sync('roadside')))
+    print(next(bob_db.read_sync('roadside')))
 
 if __name__ == '__main__':
     import asyncio

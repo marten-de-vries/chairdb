@@ -22,7 +22,7 @@ def revs_diff(id, revs, rev_tree):
 
 def read_docs(id, revs, rev_tree):
     # ... walk the revision tree
-    if revs == 'winner':
+    if revs is None:
         yield rev_tree.winner()
     elif revs == 'all':
         # all leafs
@@ -82,8 +82,8 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
     the database continously. This means you cannot use revisions as a history
     mechanism, though. (Which isn't recommended anyway.)
 
-    Attachments, views and purging are not implemented, but everything
-    essential for replication is there.
+    Views and purging are not implemented, but everything essential for
+    replication implemented.
 
     Note that writing acts similar to _bulk_docs with new_edits=false. So you
     need to manually generate new revisions (and check for conflicts, I guess).
@@ -154,23 +154,33 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
     async def read(self, requested):
         """Like CouchDB's GET dbname/docid?latest=true, but allows asking for
-        multiple documents at once. 'reqested' is an (async) iterable of
-        (id, revs) tuples. 'id' is the document id. 'revs' specify which
+        multiple documents at once. 'requested' is an (async) iterable of
+        id, opts tuples. 'id' is the document id. `opts["revs"]`` specify which
         version(s) of said document you want to access. 'revs' can be:
 
-        - 'winner' (what you would get by default from CouchDB)
+        - 'None' (what you would get by default from CouchDB, i.e. the winner)
         - 'all' (what you would get from CouchDB by include 'open_revs=all',
           i.e. all leafs)
         - a list of revisions (which you would get from CouchDB when manually
           specifying 'open_revs=[...]'.
 
-        Note that, for non-'winner' values of revs, this can return multiple
+        Note that, for non-winner values of revs, this can return multiple
         document leafs. That's why this method is an (async) generator.
 
+        By default, attachment contents are not retrieved. Only 'stub'
+        information about them is returned. You can force attachment retrieval
+        using two options:
+        - revs['att_names'] allows you to specify a list of attachment names to
+          retrieve. Defaults to None.
+        - revs['atts_since'] allows you to specify a list of revisions. Any
+          attachment that was added later is returned. Note that you can use
+          this to return all attachments by setting it to an empty list.
+          Defaults to None. (Which differs from an empty list!)
+
         """
-        async for request in requested:
+        async for id, opts in requested:
             try:
-                for doc in self.read_sync(*request):
+                for doc in self.read_sync(id, **opts):
                     yield doc
             except NotFound as exc:
                 yield exc

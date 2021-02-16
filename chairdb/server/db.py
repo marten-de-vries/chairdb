@@ -138,7 +138,6 @@ async def ensure_full_commit(request):
 
 
 def all_docs(request):
-    # TODO: share with _view
     info = {'total_rows': 0}
     items = all_docs_json(get_db(request), info)
     gen_footer = functools.partial(all_docs_footer, info)
@@ -188,13 +187,13 @@ class DocumentEndpoint(HTTPEndpoint):
 
         return request.path_params['id']
 
-    # TODO: attachments
     async def get(self, request):
         db = get_db(request)
         doc_id = self.doc_id(request)
         revs, multi = self._parse_revs(request)
         atts_since = parse_query_arg(request, 'atts_since', [])
-        resp = db.read(async_iter([(doc_id, revs, None, atts_since)]))
+        opts = {'revs': revs, 'atts_since': atts_since}
+        resp = db.read(async_iter([(doc_id, opts)]))
         if not parse_query_arg(request, 'revs', default=False):
             logger.warn('revs=true not requested, but we do it anyway!')
 
@@ -206,15 +205,12 @@ class DocumentEndpoint(HTTPEndpoint):
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
         revs = parse_query_arg(request, 'open_revs')
-        # TODO: do whatever CouchDB decides to do:
+        # In the future, do whatever CouchDB decides to do:
         # https://github.com/apache/couchdb/issues/3362
         multi = revs is not None
-        if revs is None:
-            if rev is None:
-                revs = 'winner'
-            else:
-                revs = [rev]
-        if revs not in ['winner', 'all']:
+        if revs is None and rev is not None:
+            revs = [rev]
+        if revs not in [None, 'all']:
             if not parse_query_arg(request, 'latest'):
                 logger.warn('latest=true not requested, but we do it anyway!')
             revs = [parse_rev(r) for r in revs]
@@ -222,7 +218,6 @@ class DocumentEndpoint(HTTPEndpoint):
 
     async def _multi_response(self, docs):
         # multipart
-        # TODO: call _single_response multiple times & merge?
         boundary = uuid.uuid4().hex
         mt = f'multipart/mixed; boundary="{boundary}"'
         generator = self._multipart_response(docs, boundary)
@@ -235,7 +230,6 @@ class DocumentEndpoint(HTTPEndpoint):
         yield f'--{boundary}--'
 
     async def _single_response(self, doc):
-        # TODO: non-inline attachments. Also above.
         if isinstance(doc, NotFound):
             return JSONResp(DOC_NOT_FOUND, 404)
         return JSONResp(await doc_to_couchdb_json(doc))
@@ -274,7 +268,6 @@ class LocalDocumentEndpoint(DocumentEndpoint):
     async def get(self, request):
         local_id = request.path_params['id']
         body = await get_db(request).read_local(local_id)
-        # TODO: cleanup
         if not body:
             return JSONResp(DOC_NOT_FOUND, 404)
         json = {'_id': f'_local/{local_id}', '_rev': '0-1'}
@@ -287,10 +280,9 @@ class AttachmentEndpoint(HTTPEndpoint):
         return request.path_params['id'], request.path_params['attachment']
 
     async def get(self, request):
-        # TODO: range requests - including an efficient way to query them?
         id, attachment = self.info(request)
 
-        args = async_iter([(id, 'winner', [attachment])])
+        args = async_iter([(id, {"att_names": [attachment]})])
         doc = await get_db(request).read(args).__anext__()
 
         att = doc.attachments[attachment]

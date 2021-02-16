@@ -129,8 +129,6 @@ async def doc_to_couchdb_json(doc):
     r = rev(doc.rev_num, doc.path[0])
     revs = {'start': doc.rev_num, 'ids': doc.path}
     json = {'_id': doc.id, '_rev': r, '_revisions': revs}
-    # TODO: don't serialize big attachments but handle them differently
-    # somehow...
     if doc.attachments:
         json['_attachments'] = await generate_attachments_json(doc)
 

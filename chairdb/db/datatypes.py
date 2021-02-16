@@ -67,8 +67,6 @@ class AbstractDocument(DataType):
 
     @property
     def is_deleted(self):
-        # TODO: consider how doc.is_deleted relates to NotFound. Also for local
-        # docs
         return self.body is None
 
 

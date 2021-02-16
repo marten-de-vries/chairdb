@@ -100,7 +100,7 @@ class InMemoryDatabase(AsyncDatabaseMixin):
     def read_local_sync(self, id):
         return self._local.get(id)
 
-    def read_sync(self, id, revs, att_names=None, atts_since=None):
+    def read_sync(self, id, *, revs=None, att_names=None, atts_since=None):
         try:
             # find it using the 'by id' index
             rev_tree, _ = self._byid[id]

@@ -54,9 +54,9 @@ async def replicate(source, target, create_target=False, continuous=False):
     write_input = count_docs(source.read(r_input), hist_entry)
 
     # - 2.4.2.5.2. Upload Batch of Changed Documents
+    # - 2.4.2.5.3. Upload Document with Attachments
     async for error in target.write(write_input):
         print(repr(error))
-        # - 2.4.2.5.3 TODO (attachments)
         hist_entry['doc_write_failures'] += 1
 
     # -  2.4.2.5.4. Ensure In Commit
@@ -151,13 +151,13 @@ async def revs_diff_input(changes, history_entry):
 
 async def read_input(differences):
     async for id, missing_revs, possible_ancestors in differences:
-        yield id, missing_revs, None, possible_ancestors
+        yield id, {'revs': missing_revs, 'atts_since': possible_ancestors}
 
 
 async def count_docs(docs, history_entry):
     async for doc in docs:
         if isinstance(doc, NotFound):
-            continue  # TODO: required for skimdb. But how can this happen???
+            continue  # required for skimdb. But how can this happen???
         history_entry['docs_read'] += 1
         yield doc
 
