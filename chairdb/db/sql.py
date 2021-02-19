@@ -10,10 +10,11 @@ from ..utils import as_json
 
 TABLE_CREATE = [
     """CREATE TABLE revision_trees (
-        seq INTEGER PRIMARY KEY,
-        id STRING,
-        rev_tree JSON
-    )""",
+        id STRING PRIMARY KEY,
+        rev_tree JSON,
+        seq INTEGER
+    ) WITHOUT ROWID""",
+    "CREATE UNIQUE INDEX idx_seq ON revision_trees (seq)",
     """CREATE TABLE documents (
         id INTEGER PRIMARY KEY,
         body JSON,
@@ -23,33 +24,33 @@ TABLE_CREATE = [
         id INTEGER PRIMARY KEY,
         data BLOB
     )""",
-    "CREATE UNIQUE INDEX idx_id ON revision_trees (id)",
     """CREATE TABLE local_documents (
         id STRING PRIMARY KEY,
         document JSON
-    )""",
+    ) WITHOUT ROWID""",
 ]
 
-UPDATE_SEQ = "SELECT max(seq) AS update_seq from revision_trees"
+UPDATE_SEQ = "SELECT COALESCE(MAX(seq), 0) AS update_seq from revision_trees"
 
 CHANGES = """SELECT seq, id, rev_tree FROM revision_trees
 WHERE seq > :since
 ORDER BY seq"""
 
 # default value of '[]'
-TREE_OR_NEW = """SELECT IFNULL(MAX(rev_tree), '[]')
+TREE_OR_NEW = """SELECT COALESCE(MAX(rev_tree), '[]')
 FROM revision_trees WHERE id=:id"""
 
 WRITE_LOCAL = "INSERT INTO local_documents VALUES (:id, :document)"
 
-WRITE = """INSERT OR REPLACE INTO revision_trees
-VALUES (NULL, :id, :rev_tree)"""
+WRITE = f"""INSERT OR REPLACE INTO revision_trees VALUES (:id, :rev_tree,
+    ({UPDATE_SEQ}) + 1
+)"""
 
 WRITE_DOC = "INSERT INTO documents VALUES (NULL, :body, :attachments)"
 DELETE_DOC = "DELETE FROM documents WHERE id=:id"
 READ_DOC = "SELECT body, attachments FROM documents WHERE id=:id"
 # default value of '{}'
-STORE_OR_NEW = """SELECT IFNULL(max(attachments), '{}')
+STORE_OR_NEW = """SELECT COALESCE(MAX(attachments), '{}')
 FROM documents WHERE id=:id"""
 
 WRITE_CHUNK = "INSERT INTO attachment_chunks VALUES (NULL, :data)"
@@ -96,8 +97,7 @@ class SQLDatabase(ContinuousChangesMixin):
         return self._get_update_seq()
 
     async def _get_update_seq(self):
-        seq, = await self._db.fetch_one(query=UPDATE_SEQ)
-        return seq or 0
+        return (await self._db.fetch_one(query=UPDATE_SEQ))[0]
 
     async def _changes(self, since=None):
         rows = await self._db.fetch_all(query=CHANGES,

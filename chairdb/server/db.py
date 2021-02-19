@@ -88,7 +88,9 @@ async def stream_changes_continuous(changes):
 def change_row_json(change):
     id, seq, deleted, leaf_revs = change
     changes = [{'rev': rev(*lr)} for lr in leaf_revs]
-    row = {'id': id, 'seq': seq, 'deleted': deleted, 'changes': changes}
+    row = {'seq': seq, 'id': id, 'changes': changes}
+    if deleted:
+        row['deleted'] = True
     return as_json(row)
 
 

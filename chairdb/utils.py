@@ -77,7 +77,7 @@ def couchdb_json_to_doc(json, id=None):
     id = json.pop('_id', id)
     # default to None for local docs:
     try:
-        rev_num, rev_hash = parse_rev(json['_rev'])
+        rev_num, rev_hash = parse_rev(json.pop('_rev'))
     except KeyError:
         revs_default = None
     else:
