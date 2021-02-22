@@ -1,15 +1,15 @@
 import pytest
 
-import asyncio
-import contextlib
+import anyio
 import databases
 import pprint
 
 from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
                      NotFound, app, Document)
 
+pytestmark = pytest.mark.anyio
 
-@pytest.mark.asyncio
+
 @pytest.fixture
 async def sql_target():
     async with databases.Database('sqlite:////dev/shm/test.sqlite3') as db:
@@ -17,7 +17,6 @@ async def sql_target():
             yield target2
 
 
-@pytest.mark.asyncio
 @pytest.fixture
 async def brassbandwirdum():
     async with HTTPDatabase('http://localhost:5984/brassbandwirdum',
@@ -25,7 +24,6 @@ async def brassbandwirdum():
         yield source
 
 
-@pytest.mark.asyncio
 @pytest.fixture
 async def activiteitenweger():
     async with HTTPDatabase('http://localhost:5984/activiteitenweger',
@@ -33,16 +31,15 @@ async def activiteitenweger():
         yield source2
 
 
-@pytest.mark.asyncio
 @pytest.fixture
 async def local_server():
     async with HTTPDatabase('http://test/test', app=app) as server:
         yield server
 
 
-@pytest.mark.asyncio
-async def test_replicate_multi(sql_target, brassbandwirdum, activiteitenweger,
-                               local_server):
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_replicate_multi(anyio_backend, sql_target, brassbandwirdum,
+                               activiteitenweger, local_server):
     # guarantee stable replication id
     target = InMemoryDatabase(id='test')
     # first time
@@ -68,22 +65,21 @@ async def test_replicate_multi(sql_target, brassbandwirdum, activiteitenweger,
     assert result4['ok']
 
 
-@pytest.mark.asyncio
 async def test_replicate_continuous():
     source = InMemoryDatabase()
     source.write_sync(Document('test', 1, ('a',), {}))
     target = InMemoryDatabase()
-    task = asyncio.create_task(replicate(source, target, continuous=True))
-    # verify the 'normal' replication is done (everything in the db has been
-    # replicated succesfully)
-    await document_existance(target, Document('test', 1, ('a',), {}))
-    # now write another document to check 'continuous=True'
-    source.write_sync(Document('test2', 1, ('b',), {}))
-    await document_existance(target, Document('test2', 1, ('b',), {}))
-    # clean up
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    async with anyio.create_task_group() as tg:
+        create_target, continuous = False, True
+        tg.spawn(replicate, source, target, create_target, continuous)
+        # verify the 'normal' replication is done (everything in the db has
+        # been replicated succesfully)
+        await document_existance(target, Document('test', 1, ('a',), {}))
+        # now write another document to check 'continuous=True'
+        source.write_sync(Document('test2', 1, ('b',), {}))
+        await document_existance(target, Document('test2', 1, ('b',), {}))
+        # clean up
+        tg.cancel_scope.cancel()
 
 
 async def document_existance(db, doc):
@@ -92,4 +88,4 @@ async def document_existance(db, doc):
         try:
             result = next(db.read_sync(doc.id))
         except NotFound:
-            await asyncio.sleep(0)
+            await anyio.sleep(0)

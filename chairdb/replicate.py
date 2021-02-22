@@ -1,3 +1,5 @@
+import anyio
+
 import email.utils
 import hashlib
 import uuid
@@ -47,17 +49,13 @@ async def replicate(source, target, create_target=False, continuous=False):
     diff_input = revs_diff_input(changes, hist_entry)
 
     # - 2.4.2.4.3. Calculate Revision Difference
-    r_input = read_input(target.revs_diff(diff_input))
+    differences = target.revs_diff(diff_input)
 
     # 2.4.2.5. Replicate Changes
-    #  - 2.4.2.5.1. Fetch Changed Documents
-    write_input = count_docs(source.read(r_input), hist_entry)
-
-    # - 2.4.2.5.2. Upload Batch of Changed Documents
-    # - 2.4.2.5.3. Upload Document with Attachments
-    async for error in target.write(write_input):
-        print(repr(error))
-        hist_entry['doc_write_failures'] += 1
+    async with anyio.create_task_group() as tg:
+        async for id, missing_revs, possible_ancestors in differences:
+            opts = {'revs': missing_revs, 'atts_since': possible_ancestors}
+            tg.spawn(replicate_change, source, target, hist_entry, id, opts)
 
     # -  2.4.2.5.4. Ensure In Commit
     await target.ensure_full_commit()
@@ -149,9 +147,19 @@ async def revs_diff_input(changes, history_entry):
         history_entry['recorded_seq'] = change.seq
 
 
-async def read_input(differences):
-    async for id, missing_revs, possible_ancestors in differences:
-        yield id, {'revs': missing_revs, 'atts_since': possible_ancestors}
+async def replicate_change(source, target, history_entry, id, opts):
+    try:
+        #  - 2.4.2.5.1. Fetch Changed Documents
+        async with source.read(id, **opts) as result:
+            write_input = count_docs(result, history_entry)
+
+            # - 2.4.2.5.2. Upload Batch of Changed Documents
+            # - 2.4.2.5.3. Upload Document with Attachments
+            async for error in target.write(write_input):
+                print(repr(error))
+                history_entry['doc_write_failures'] += 1
+    except Exception as e:
+        print(repr(e))
 
 
 async def count_docs(docs, history_entry):

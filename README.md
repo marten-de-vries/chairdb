@@ -15,7 +15,7 @@ For more information, please read the [blog post](https://ma.rtendevri.es/chaird
 ## Example
 
 ```python
-import asyncio
+import anyio  # chairdb.server doesn't support trio (yet?)
 from chairdb import InMemoryDatabase, HTTPDatabase, replicate
 
 async def main():
@@ -26,7 +26,7 @@ async def main():
 				print(change)
 
 if __name__ == '__main__':
-		asyncio.run(main())
+		anyio.run(main)
 ```
 
 ## File overview

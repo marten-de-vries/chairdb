@@ -3,11 +3,11 @@ starlette
 httpx
 ijson
 databases
-aiostream
 aiosqlite
 uvicorn
 aiofiles
 flake8
 pytest
-pytest-asyncio
 pytest-cov
+git+https://github.com/agronholm/anyio.git@sync-event-set
+trio

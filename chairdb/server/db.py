@@ -6,6 +6,7 @@ builds a full CouchDB-compatible server out of in-memory databases.
 
 """
 
+import anyio
 from starlette.applications import Starlette
 from starlette.endpoints import HTTPEndpoint
 from starlette.responses import StreamingResponse
@@ -64,7 +65,7 @@ class Database(HTTPEndpoint):
 
 
 # changes
-def changes(request):
+async def changes(request):
     if parse_query_arg(request, 'style', default='main_only') != 'all_docs':
         logger.warn('style =/= all_docs, but we do that anyway!')
     since = int(parse_query_arg(request, 'since', default=0))
@@ -112,7 +113,7 @@ def changes_footer(info):
 
 
 # revs diff
-def revs_diff(request):
+async def revs_diff(request):
     remote = parse_json_stream(request.stream(), 'kvitems', '')
     remote_parsed = parse_revs(remote)
     result = get_db(request).revs_diff(remote_parsed)
@@ -139,7 +140,7 @@ async def ensure_full_commit(request):
     return JSONResp(FULL_COMMIT, 201)
 
 
-def all_docs(request):
+async def all_docs(request):
     info = {'total_rows': 0}
     items = all_docs_json(get_db(request), info)
     gen_footer = functools.partial(all_docs_footer, info)
@@ -194,15 +195,14 @@ class DocumentEndpoint(HTTPEndpoint):
         doc_id = self.doc_id(request)
         revs, multi = self._parse_revs(request)
         atts_since = parse_query_arg(request, 'atts_since', [])
-        opts = {'revs': revs, 'atts_since': atts_since}
-        resp = db.read(async_iter([(doc_id, opts)]))
-        if not parse_query_arg(request, 'revs', default=False):
-            logger.warn('revs=true not requested, but we do it anyway!')
+        async with db.read(doc_id, revs=revs, atts_since=atts_since) as resp:
+            if not parse_query_arg(request, 'revs', default=False):
+                logger.warn('revs=true not requested, but we do it anyway!')
 
-        if multi:
-            return await self._multi_response(resp)
-        else:
-            return await self._single_response(await resp.__anext__())
+            if multi:
+                return await self._multi_response(resp)
+            else:
+                return await self._single_response(await resp.__anext__())
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -238,22 +238,23 @@ class DocumentEndpoint(HTTPEndpoint):
 
     async def put(self, request):
         doc_id = self.doc_id(request)
-        if request.headers['Content-Type'] == 'application/json':
-            doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
-            assert not todo
-        else:
-            parser = MultipartStreamParser(request).__aiter__()
-            first = await parser.__anext__()
-            assert first.headers == {'Content-Type': 'application/json'}
-            doc_json = json.loads(await first.aread())
-            doc, todo = couchdb_json_to_doc(doc_json, doc_id)
-            add_http_attachments(doc, todo, parser)
+        async with anyio.create_task_group() as tg:
+            if request.headers['Content-Type'] == 'application/json':
+                doc, todo = couchdb_json_to_doc(await request.json(), doc_id)
+                assert not todo
+            else:
+                parser = MultipartStreamParser(request).__aiter__()
+                first = await parser.__anext__()
+                assert first.headers == {'Content-Type': 'application/json'}
+                doc_json = json.loads(await first.aread())
+                doc, todo = couchdb_json_to_doc(doc_json, doc_id)
+                add_http_attachments(doc, todo, parser, tg)
 
-        if isinstance(doc, LocalDocument):
-            await get_db(request).write_local(doc.id, doc.body)
-        else:
-            assert not parse_query_arg(request, 'new_edits', default=True)
-            await to_list(get_db(request).write(async_iter([doc])))
+            if isinstance(doc, LocalDocument):
+                await get_db(request).write_local(doc.id, doc.body)
+            else:
+                assert not parse_query_arg(request, 'new_edits', default=True)
+                await to_list(get_db(request).write(async_iter([doc])))
 
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 
@@ -284,17 +285,17 @@ class AttachmentEndpoint(HTTPEndpoint):
     async def get(self, request):
         id, attachment = self.info(request)
 
-        args = async_iter([(id, {"att_names": [attachment]})])
-        doc = await get_db(request).read(args).__anext__()
+        async with get_db(request).read(id, att_names=[attachment]) as docs:
+            doc = await docs.__anext__()
 
-        att = doc.attachments[attachment]
-        resp = StreamingResponse(att, headers={
-            'Content-Type': att.meta.content_type,
-            'Content-Length': str(att.meta.length),
-            'ETag': att.meta.digest,
-            'Cache-Control': 'must-revalidate',
-        })
-        return resp
+            att = doc.attachments[attachment]
+            resp = StreamingResponse(att, headers={
+                'Content-Type': att.meta.content_type,
+                'Content-Length': str(att.meta.length),
+                'ETag': att.meta.digest,
+                'Cache-Control': 'must-revalidate',
+            })
+            return resp
 
 
 class DesignAttachmentEndpoint(AttachmentEndpoint):

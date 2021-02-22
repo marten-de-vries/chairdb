@@ -8,8 +8,20 @@ DOCS = [
     Document('mytest', 2, ('y', 'x'), body=None)
 ]
 
+pytestmark = pytest.mark.anyio
 
-@pytest.mark.asyncio
+
+async def test_remote_att():
+    url = 'http://localhost:5984/brassbandwirdum'
+    async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
+        async with db.read('_design/brassbandwirdum', atts_since=[]) as resp:
+            async for doc in resp:
+                print(doc.id, doc.rev_num, doc.path, doc.body.keys())
+                for name, att in doc.attachments.items():
+                    total_length = sum([len(chunk) async for chunk in att])
+                    print(name, att.meta, total_length)
+
+
 async def test_remote():  # noqa: C901
     url = 'http://localhost:5984/test'
     async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
@@ -30,8 +42,10 @@ async def test_remote():  # noqa: C901
                 ('mytest', {}),
                 ('mytest', {'revs': [(2, 'y')]}),
             ]
-            async for result in db.read(async_iter(req)):
-                print(result)
+            for id, opts in req:
+                async with db.read(id, **opts) as resp:
+                    async for result in resp:
+                        print(result)
             async for change in db.changes():
                 print(change)
                 break

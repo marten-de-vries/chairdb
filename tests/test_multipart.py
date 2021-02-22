@@ -10,21 +10,22 @@ def run_parser(input):
     for letter in input:
         # make sure there are no off-by-one bugs by feeding it a single letter
         # at the time.
-        parser.feed(bytes([letter]))
+        yield from parser.feed(bytes([letter]))
     parser.check_done()
-    return parser
 
 
 def test_parser_normally():
-    parser = run_parser(TEST)
-    headers = {'Content-Type': 'application/json'}
-    assert parser.results == [{
-        'headers': headers,
-        'body': b'{}',
-        'done': True
-    }]
+    print(list(run_parser(TEST)))
+    assert list(run_parser(TEST)) == [
+        ('start',),
+        ('header', 'Content-Type', 'application/json'),
+        ('headers_done',),
+        ('chunk', b'{'),
+        ('chunk', b'}'),
+        ('body_done',),
+    ]
 
 
 def test_parsing_not_done():
     with pytest.raises(ValueError):
-        run_parser(TEST[:-1])
+        list(run_parser(TEST[:-1]))

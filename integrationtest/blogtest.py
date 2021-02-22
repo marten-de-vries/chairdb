@@ -32,5 +32,5 @@ async def main():
     print(next(bob_db.read_sync('roadside')))
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    import anyio
+    anyio.run(main, backend='trio')

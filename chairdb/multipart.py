@@ -1,5 +1,3 @@
-import asyncio
-import contextlib
 import re
 
 MULTIPART_REGEX = 'multipart/(?:mixed|related); boundary="?([^"$]+)"?$'
@@ -19,57 +17,58 @@ class MultipartStreamParser:
         except AttributeError:
             self.input = stream.stream()
         self.parser = MultipartParser(stream.headers['Content-Type'])
-        self.parsing_task = None
-
-    async def continue_parsing(self):
-        # join waiting for an existing 'parsing request'. If that's not
-        # possible, start a new one.
-        if not self.parsing_task or self.parsing_task.done():
-            self.parsing_task = asyncio.create_task(self._continue_parsing())
-        await self.parsing_task
-
-    async def _continue_parsing(self):
-        self.parser.feed(await self.input.__anext__())
+        self.cache = []
 
     async def __aiter__(self):
-        keep_parsing = True
-        while keep_parsing:
-            # read more input
-            try:
-                await self.continue_parsing()
-            except StopAsyncIteration:
-                keep_parsing = False
+        while self.parser.state != self.parser.DONE:
+            await self.continue_parsing()
+            for part in self.cache:
+                yield part
+            self.cache.clear()
 
-            # process input
-            for part in self.parser.results:
-                yield Part(part, self)
-            self.parser.results.clear()
+    async def continue_parsing(self):
+        try:
+            chunk = await self.input.__anext__()
+        except StopAsyncIteration:
+            self.parser.check_done()
+        else:
+            for args in self.parser.feed(chunk):
+                self._process_parsed(*args)
 
-        # make sure the input wasn't incomplete
-        self.parser.check_done()
+    def _process_parsed(self, type, *args):  # noqa: C901
+        if type == 'start':
+            self.part = Part(self)
+        elif type == 'header':
+            key, value = args
+            self.part.headers[key] = value
+        elif type == 'headers_done':
+            self.cache.append(self.part)
+        elif type == 'chunk':
+            self.part.cache.append(args[0])
+        elif type == 'body_done':
+            self.part.done = True
+        else:
+            raise ValueError(f"Unknown type: {type}")
 
 
 class Part:
     """Mimics the parts of httpx's stream response we use."""
 
-    def __init__(self, info, parser):
-        self.info = info
+    def __init__(self, parser):
         self.parser = parser
-
-    @property
-    def headers(self):
-        return self.info['headers']
+        self.headers = {}
+        self.done = False
+        self.cache = []
 
     async def aread(self):
-        while not self.info['done']:
-            await self.parser.continue_parsing()
-        return self.info['body']
+        return b''.join([chunk async for chunk in self.aiter_bytes()])
 
     async def aiter_bytes(self):
         while True:
-            yield bytes(self.info['body'])
-            self.info['body'].clear()
-            if self.info['done']:
+            for chunk in self.cache:
+                yield chunk
+            self.cache.clear()
+            if self.done:
                 break
             await self.parser.continue_parsing()
 
@@ -80,9 +79,6 @@ class MultipartParser:
     deviations from the appropriate standards are most likely bugs.
 
     """
-    class OutOfData(Exception):
-        pass
-
     def __init__(self, content_type):
         match = re.match(MULTIPART_REGEX, content_type)
         assert match
@@ -91,13 +87,10 @@ class MultipartParser:
 
         self.state = self.START
         self.cache = bytearray()
-        self.results = []
 
     def feed(self, chunk):
         self.cache.extend(chunk)
-        with contextlib.suppress(self.OutOfData):
-            self.state()
-            # missing data - wait until next call
+        yield from self.state()
 
     def check_done(self):
         if self.state != self.DONE:
@@ -105,55 +98,51 @@ class MultipartParser:
 
     def change_state(self, new_state):
         self.state = new_state
-        self.state()
+        yield from self.state()
 
     def START(self):
         # at start there's no \r\n in the boundary
-        assert self._data_before(self.boundary[2:]) == b''
-        self.change_state(self.READ_BOUNDARY_END)
+        if self._data_before(self.boundary[2:]) == b'':
+            yield from self.change_state(self.READ_BOUNDARY_END)
 
     def READ_BOUNDARY_END(self):
         if self.cache[:2] == b'--':
-            self.change_state(self.DONE)
-        else:
-            assert self._data_before(b'\r\n') == b''
-            self.current_headers = {}
-            self.change_state(self.READ_HEADERS)
+            yield from self.change_state(self.DONE)
+        elif self._data_before(b'\r\n') == b'':
+            yield 'start',
+            yield from self.change_state(self.READ_HEADERS)
 
     def _data_before(self, separator):
         try:
             before, self.cache = self.cache.split(separator, maxsplit=1)
         except ValueError:
-            raise self.OutOfData()
+            before = None
         return before
 
     def READ_HEADERS(self):
-        while True:
-            line = self._data_before(b'\r\n')
-            if line:
-                key, value = line.decode('UTF-8').split(': ', maxsplit=1)
-                self.current_headers[key] = value
-            else:
-                self.cur_result = {
-                    'headers': self.current_headers,
-                    'body': bytearray(),
-                    'done': False
-                }
-                self.results.append(self.cur_result)
-                self.change_state(self.READ_DOC)
+        line = self._data_before(b'\r\n')
+        if line:
+            key, value = line.decode('UTF-8').split(': ', maxsplit=1)
+            yield 'header', key, value
+            yield from self.state()
+        elif line == b'':
+            yield 'headers_done',
+            yield from self.change_state(self.READ_DOC)
 
     def READ_DOC(self):
-        try:
-            data = self._data_before(self.boundary)
-        except self.OutOfData:
+        done = True
+        data = self._data_before(self.boundary)
+        if data is None:
+            done = False
             # move input that cannot contain the boundary out of the way.
-            self.cur_result['body'].extend(self.cache[:-len(self.boundary)])
+            data = self.cache[:-len(self.boundary)]
             del self.cache[:-len(self.boundary)]
-            # ... but re-raise, as we still need to find the boundary.
-            raise
-        self.cur_result['body'].extend(data)
-        self.cur_result['done'] = True
-        self.change_state(self.READ_BOUNDARY_END)
+        if data:
+            yield 'chunk', bytes(data)
+        if done:
+            yield 'body_done',
+            yield from self.change_state(self.READ_BOUNDARY_END)
 
     def DONE(self):
         self.cache.clear()
+        yield from []

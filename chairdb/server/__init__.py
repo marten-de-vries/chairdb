@@ -36,7 +36,7 @@ SESSION = {
 }
 
 
-def root(request):
+async def root(request):
     return JSONResp({
         "chairdb": "Welcome!",
         "version": __version__,
@@ -56,17 +56,17 @@ async def put_db(request):
     return JSONResp(SUCCESS, 201)
 
 
-def delete_db(request):
+async def delete_db(request):
     dbname = request.path_params['db']
     request.app.state.dbs.pop(dbname, None)
     return JSONResp(SUCCESS, 200)
 
 
-def all_dbs(request):
+async def all_dbs(request):
     return JSONResp(list(request.app.state.dbs.keys()))
 
 
-def session(request):
+async def session(request):
     return JSONResp(SESSION)
 
 

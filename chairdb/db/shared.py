@@ -1,6 +1,8 @@
-import asyncio
+import anyio
 
-from .datatypes import Change, Missing, NotFound
+import contextlib
+
+from .datatypes import Change, Missing
 from ..utils import to_list
 
 
@@ -46,11 +48,12 @@ class ContinuousChangesMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._update_event = asyncio.Event()
+        self._update_event = None
 
     def _updated(self):
-        self._update_event.set()
-        self._update_event.clear()
+        if self._update_event:
+            self._update_event.set()
+            self._update_event = None
 
     async def changes(self, since=None, continuous=False):
         """"Like CouchDB's _changes with style=all_docs"""
@@ -65,13 +68,14 @@ class ContinuousChangesMixin:
                 # stop immediately.
                 break
             # wait for new changes to come available, then loop
+            if not self._update_event:
+                self._update_event = anyio.create_event()
             await self._update_event.wait()
 
 
-def as_future_result(value):
-    future = asyncio.get_event_loop().create_future()
-    future.set_result(value)
-    return future
+async def as_future_result(value):
+    await anyio.sleep(0)
+    return value
 
 
 class AsyncDatabaseMixin(ContinuousChangesMixin):
@@ -139,11 +143,10 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
     async def _syncify_attachments(self, doc):
         if doc.attachments:
-            tasks = []
-            for name, att in doc.attachments.items():
-                if not att.is_stub:
-                    tasks.append(self._syncify_att(doc, name, att))
-            await asyncio.gather(*tasks)
+            async with anyio.create_task_group() as tg:
+                for name, att in doc.attachments.items():
+                    if not att.is_stub:
+                        tg.spawn(self._syncify_att, doc, name, att)
 
     async def _syncify_att(self, doc, name, att):
         data_list = await to_list(att)
@@ -152,11 +155,11 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
     async def read_local(self, id):
         return self.read_local_sync(id)
 
-    async def read(self, requested):
-        """Like CouchDB's GET dbname/docid?latest=true, but allows asking for
-        multiple documents at once. 'requested' is an (async) iterable of
-        id, opts tuples. 'id' is the document id. `opts["revs"]`` specify which
-        version(s) of said document you want to access. 'revs' can be:
+    @contextlib.asynccontextmanager
+    async def read(self, id, **opts):
+        """Like CouchDB's GET dbname/docid?latest=true. 'id' is the document
+        id. `opts["revs"]`` specify which version(s) of said document you want
+        to access. 'revs' can be:
 
         - 'None' (what you would get by default from CouchDB, i.e. the winner)
         - 'all' (what you would get from CouchDB by include 'open_revs=all',
@@ -178,12 +181,11 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
           Defaults to None. (Which differs from an empty list!)
 
         """
-        async for id, opts in requested:
-            try:
-                for doc in self.read_sync(id, **opts):
-                    yield doc
-            except NotFound as exc:
-                yield exc
+        yield self._read(id, **opts)
+
+    async def _read(self, id, **opts):
+        for doc in self.read_sync(id, **opts):
+            yield doc
 
     async def ensure_full_commit(self):
         pass  # no-op for an in-memory db

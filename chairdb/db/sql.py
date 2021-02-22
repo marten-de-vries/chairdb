@@ -181,16 +181,20 @@ class SQLDatabase(ContinuousChangesMixin):
             raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
             return json.loads(raw[0])
 
-    async def read(self, requested):
-        async for id, opts in requested:
-            raw_tree = await self._db.fetch_one(READ, {'id': id})
-            try:
-                rev_tree = self._decode_tree(raw_tree[0])
-            except TypeError:
-                yield NotFound(id)
-            else:
-                async for doc in self._read_one(rev_tree, id, **opts):
-                    yield doc
+    @contextlib.asynccontextmanager
+    async def read(self, id, **opts):
+        async with self._db.transaction():
+            yield self._read(id, **opts)
+
+    async def _read(self, id, **opts):
+        raw_tree = await self._db.fetch_one(READ, {'id': id})
+        try:
+            rev_tree = self._decode_tree(raw_tree[0])
+        except TypeError:
+            yield NotFound(id)
+        else:
+            async for doc in self._read_one(rev_tree, id, **opts):
+                yield doc
 
     async def _read_one(self, tree, id, revs=None, att_names=None,
                         atts_since=None):

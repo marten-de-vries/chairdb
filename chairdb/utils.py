@@ -1,6 +1,6 @@
+import anyio
 import ijson
 
-import asyncio
 import base64
 import contextlib
 import json
@@ -158,39 +158,45 @@ async def generate_attachments_json(doc):
     return atts
 
 
-def add_http_attachments(doc, todo, parser):
-    futures = {}
+def add_http_attachments(doc, todo, parser, tg):
+    send_streams = {}
     for name, meta in todo:
-        futures[name] = asyncio.get_event_loop().create_future()
-        doc.attachments[name] = HTTPAttachment(meta, futures[name])
-    asyncio.create_task(parse_atts(futures, parser))
+        send_streams[name], rec_stream = anyio.create_memory_object_stream()
+        doc.attachments[name] = HTTPAttachment(meta, rec_stream)
+    tg.spawn(parse_atts, send_streams, parser)
 
 
 class HTTPAttachment(typing.NamedTuple):
     meta: AttachmentMetadata
-    part: asyncio.Future
+    receive_stream: anyio.streams.memory.MemoryObjectReceiveStream
     is_stub: bool = False
 
     async def __aiter__(self):
-        attachment = await self.part
-        aiterator = attachment.aiter_bytes()
-        if attachment.headers.get('Content-Encoding') == 'gzip':
-            aiterator = self._unzip(aiterator)
-        async for chunk in aiterator:
-            if chunk:
+        async with self.receive_stream:
+            async for chunk in self.receive_stream:
                 yield chunk
 
-    async def _unzip(self, chunks):
-        decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
-        async for chunk in chunks:
-            yield decompressor.decompress(chunk)
-        yield decompressor.flush()
+
+async def parse_atts(send_streams, parser):
+    async for attachment in parser:
+        _, name, _ = attachment.headers['Content-Disposition'].split('"')
+
+        aiterator = attachment.aiter_bytes()
+        if attachment.headers.get('Content-Encoding') == 'gzip':
+            aiterator = _unzip(aiterator)
+
+        stream = send_streams[name]
+        async with stream:
+            async for chunk in aiterator:
+                if chunk:
+                    await stream.send(chunk)
 
 
-async def parse_atts(futures, parser):
-    async for att in parser:
-        _, name, _ = att.headers['Content-Disposition'].split('"')
-        futures[name].set_result(att)
+async def _unzip(chunks):
+    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    async for chunk in chunks:
+        yield decompressor.decompress(chunk)
+    yield decompressor.flush()
 
 
 def rev(rev_num, rev_hash):

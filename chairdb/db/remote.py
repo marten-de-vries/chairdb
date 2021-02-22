@@ -1,8 +1,8 @@
 import contextlib
 import json
 
+import anyio
 import httpx
-from aiostream import stream
 
 from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from ..multipart import MultipartStreamParser
@@ -137,14 +137,15 @@ class HTTPDatabase(httpx.AsyncClient):
     async def write_local(self, id, doc):
         await self._request('PUT', f'/_local/{id}', json=doc)
 
-    async def read(self, requested):
-        readers = []
-        async for id, opts in requested:
-            params = self._read_params(id, **opts)
-            readers.append(self._read_docs(id, params))
-        async with stream.merge(*readers).stream() as merged_stream:
-            async for doc in merged_stream:
-                yield doc
+    @contextlib.asynccontextmanager
+    async def read(self, id, **opts):
+        params = self._read_params(id, **opts)
+        send_stream, receive_stream = anyio.create_memory_object_stream()
+        async with self._stream('GET', '/' + id, params=params) as resp:
+            async with anyio.create_task_group() as tg:
+                tg.spawn(self._read, send_stream, tg, params, resp)
+                async with receive_stream:
+                    yield receive_stream
 
     def _read_params(self, id, revs=None, att_names=None, atts_since=None):
         assert att_names is None
@@ -157,10 +158,11 @@ class HTTPDatabase(httpx.AsyncClient):
             params['atts_since'] = as_json([rev(*r) for r in atts_since])
         return params
 
-    async def _read_docs(self, id, params):
-        async with self._stream('GET', '/' + id, params=params) as resp:
+    async def _read(self, send_stream, tg, params, resp):
+        async with send_stream:
             if resp.status_code == httpx.codes.NOT_FOUND:
-                yield NotFound(json.loads(await resp.aread()))
+                message = json.loads(await resp.aread())
+                await send_stream.send(NotFound(message))
             else:
                 assert resp.status_code == httpx.codes.OK
 
@@ -168,28 +170,29 @@ class HTTPDatabase(httpx.AsyncClient):
                     # multiple docs
                     assert resp.status_code == httpx.codes.OK
                     async for part in MultipartStreamParser(resp):
-                        yield await self._read_single_doc(part)
+                        await self._read_single_doc(send_stream, tg, part)
                 else:
-                    yield await self._read_single_doc(resp)
+                    await self._read_single_doc(send_stream, tg, resp)
 
-    async def _read_single_doc(self, resp):
+    async def _read_single_doc(self, send_stream, tg, resp):
         if resp.headers['Content-Type'].startswith('multipart/'):
             parser = MultipartStreamParser(resp).__aiter__()
             part = await parser.__anext__()
             assert part.headers == {'Content-Type': 'application/json'}
             doc, todo = couchdb_json_to_doc(json.loads(await part.aread()))
-            add_http_attachments(doc, todo, parser)
-            return doc
+            add_http_attachments(doc, todo, parser, tg)
+            await send_stream.send(doc)
         else:
             assert resp.headers['Content-Type'] == 'application/json'
             doc, todo = couchdb_json_to_doc(json.loads(await resp.aread()))
             assert not todo
-            return doc
+            await send_stream.send(doc)
 
     async def read_local(self, id):
-        doc = await self._read_docs('_local/' + id, {}).__anext__()
-        with contextlib.suppress(AttributeError):
-            return doc.body
+        async with self.read('_local/' + id) as result:
+            doc = await result.__anext__()
+            with contextlib.suppress(AttributeError):
+                return doc.body
 
     async def ensure_full_commit(self):
         await self._request('POST', '_ensure_full_commit')

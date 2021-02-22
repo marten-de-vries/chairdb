@@ -1,4 +1,5 @@
 import pytest
+
 from chairdb import (InMemoryDatabase, Change, NotFound, Document, Missing,
                      AttachmentStub, AttachmentMetadata, PreconditionFailed)
 from chairdb.utils import async_iter, to_list
@@ -203,7 +204,7 @@ def test_attachment_errors(db):
         db.write_sync(doc)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_async(db):
     assert await db.update_seq == 0
     # query some unexisting rev
@@ -227,15 +228,18 @@ async def test_async(db):
         ('mytest', {}),
         ('mytest', {'revs': [(2, 'y')]}),
     ]
-    assert await to_list(db.read(async_iter(req))) == [
-        Document('mytest', 2, ('y', 'x',), body=None),
-    ] * 3
+    for id, opts in req:
+        async with db.read(id, **opts) as resp:
+            assert await to_list(resp) == [
+                Document('mytest', 2, ('y', 'x',), body=None),
+            ]
     assert await to_list(db.changes()) == [
         Change('mytest', seq=2, deleted=True, leaf_revs=[(2, 'y')])
     ]
     # try never-existing doc
-    errors = await to_list(db.read(async_iter([('abc', {})])))
-    assert len(errors) == 1 and isinstance(errors[0], NotFound)
+    with pytest.raises(NotFound):
+        async with db.read('abc') as result:
+            await to_list(result)
 
     assert 'memory' in await db.id
 
@@ -247,14 +251,15 @@ async def test_async(db):
     new_doc = Document('csv', 1, ('a',), {})
     new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
     assert not await to_list(db.write(async_iter([new_doc])))
-    args = ('csv', {"atts_since": []})
-    loaded_doc = await db.read(async_iter([args])).__anext__()
-    assert await to_list(loaded_doc.attachments['test.csv']) == [
-        b'4,5,6'
-    ]
-    stub_doc = await db.read(async_iter([('csv', {})])).__anext__()
-    assert stub_doc.attachments['test.csv'].is_stub
-    # make sure re-inserting stub revision succeeds
-    stub_doc.rev_num += 1
-    stub_doc.path = ('b',) + stub_doc.path
-    assert not await to_list(db.write(async_iter([stub_doc])))
+    async with db.read('csv', atts_since=[]) as resp:
+        loaded_doc = await resp.__anext__()
+        assert await to_list(loaded_doc.attachments['test.csv']) == [
+            b'4,5,6'
+        ]
+    async with db.read('csv') as resp:
+        stub_doc = await resp.__anext__()
+        assert stub_doc.attachments['test.csv'].is_stub
+        # make sure re-inserting stub revision succeeds
+        stub_doc.rev_num += 1
+        stub_doc.path = ('b',) + stub_doc.path
+        assert not await to_list(db.write(async_iter([stub_doc])))
