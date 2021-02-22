@@ -11,11 +11,10 @@ def run_parser(input):
         # make sure there are no off-by-one bugs by feeding it a single letter
         # at the time.
         yield from parser.feed(bytes([letter]))
-    parser.check_done()
+    assert parser.state == parser.DONE
 
 
 def test_parser_normally():
-    print(list(run_parser(TEST)))
     assert list(run_parser(TEST)) == [
         ('start',),
         ('header', 'Content-Type', 'application/json'),
@@ -27,5 +26,5 @@ def test_parser_normally():
 
 
 def test_parsing_not_done():
-    with pytest.raises(ValueError):
+    with pytest.raises(AssertionError):
         list(run_parser(TEST[:-1]))

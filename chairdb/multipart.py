@@ -1,3 +1,4 @@
+import anyio
 import re
 
 MULTIPART_REGEX = 'multipart/(?:mixed|related); boundary="?([^"$]+)"?$'
@@ -18,6 +19,7 @@ class MultipartStreamParser:
             self.input = stream.stream()
         self.parser = MultipartParser(stream.headers['Content-Type'])
         self.cache = []
+        self.parsing_paused_event = None
 
     async def __aiter__(self):
         while self.parser.state != self.parser.DONE:
@@ -27,13 +29,17 @@ class MultipartStreamParser:
             self.cache.clear()
 
     async def continue_parsing(self):
-        try:
-            chunk = await self.input.__anext__()
-        except StopAsyncIteration:
-            self.parser.check_done()
-        else:
-            for args in self.parser.feed(chunk):
-                self._process_parsed(*args)
+        if self.parsing_paused_event:
+            # join waiting for the current parse results
+            return await self.parsing_paused_event.wait()
+        self.parsing_paused_event = anyio.create_event()
+
+        chunk = await self.input.__anext__()
+        for args in self.parser.feed(chunk):
+            self._process_parsed(*args)
+
+        self.parsing_paused_event.set()
+        self.parsing_paused_event = None
 
     def _process_parsed(self, type, *args):  # noqa: C901
         if type == 'start':
@@ -47,7 +53,7 @@ class MultipartStreamParser:
             self.part.cache.append(args[0])
         elif type == 'body_done':
             self.part.done = True
-        else:
+        else:  # pragma: no cover
             raise ValueError(f"Unknown type: {type}")
 
 
@@ -78,6 +84,18 @@ class MultipartParser:
     CouchDB. No specification was consulted while writing this, so any
     deviations from the appropriate standards are most likely bugs.
 
+    ``feed()`` can be used to push data. It's a generator function that yields
+    the following tokens (example values are given for the argument slots):
+
+    - ('start',)
+    - ('header', 'Content-Type', 'application/json')
+    - ('headers_done')
+    - ('chunk', b'{"hello": "world!"}')
+    - ('body_done',)
+
+    Don't forget to check the ``parser.state == parser.DONE`` invariant holds
+    after you pushed in the final data using ``feed()``!
+
     """
     def __init__(self, content_type):
         match = re.match(MULTIPART_REGEX, content_type)
@@ -91,10 +109,6 @@ class MultipartParser:
     def feed(self, chunk):
         self.cache.extend(chunk)
         yield from self.state()
-
-    def check_done(self):
-        if self.state != self.DONE:
-            raise ValueError("Incomplete data!")
 
     def change_state(self, new_state):
         self.state = new_state

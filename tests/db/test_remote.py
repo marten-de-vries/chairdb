@@ -16,10 +16,9 @@ async def test_remote_att():
     async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
         async with db.read('_design/brassbandwirdum', atts_since=[]) as resp:
             async for doc in resp:
-                print(doc.id, doc.rev_num, doc.path, doc.body.keys())
                 for name, att in doc.attachments.items():
                     total_length = sum([len(chunk) async for chunk in att])
-                    print(name, att.meta, total_length)
+                    assert total_length == int(att.meta.length)
 
 
 async def test_remote():  # noqa: C901

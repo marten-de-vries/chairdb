@@ -1,3 +1,4 @@
+import anyio
 import contextlib
 import json
 
@@ -153,13 +154,9 @@ class SQLDatabase(ContinuousChangesMixin):
             for data_ptr in old:
                 await self._db.executemany(DELETE_CHUNK, [{'id': id}
                                                           for id in data_ptr])
-            for name, att in new:
-                data_ptr = []
-                async for chunk in att:
-                    values = {'data': chunk}
-                    chunk_ptr = await self._db.execute(WRITE_CHUNK, values)
-                    data_ptr.append(chunk_ptr)
-                att_store.add(name, att.meta, data_ptr)
+            async with anyio.create_task_group() as tg:
+                for name, att in new:
+                    tg.spawn(self._read_att, name, att, att_store)
 
             values = {'body': as_json(doc.body),
                       'attachments': as_json(att_store)}
@@ -181,10 +178,16 @@ class SQLDatabase(ContinuousChangesMixin):
             raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
             return json.loads(raw[0])
 
+    async def _read_att(self, name, att, att_store):
+        data_ptr = []
+        async for chunk in att:
+            chunk_ptr = await self._db.execute(WRITE_CHUNK, {'data': chunk})
+            data_ptr.append(chunk_ptr)
+        att_store.add(name, att.meta, data_ptr)
+
     @contextlib.asynccontextmanager
     async def read(self, id, **opts):
-        async with self._db.transaction():
-            yield self._read(id, **opts)
+        yield self._read(id, **opts)
 
     async def _read(self, id, **opts):
         raw_tree = await self._db.fetch_one(READ, {'id': id})
