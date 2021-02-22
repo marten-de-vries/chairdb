@@ -119,18 +119,11 @@ class SQLDatabase(ContinuousChangesMixin):
         return RevisionTree(Branch(rn, tuple(path), ptr)
                             for rn, path, ptr in json.loads(data))
 
-    async def write(self, docs):
-        async for doc in docs:
-            try:
-                await self._write_doc(doc)
-            except Exception as exc:
-                yield exc
-
     async def write_local(self, id, doc):
         values = {'id': id, 'document': as_json(doc)}
         await self._db.execute(WRITE_LOCAL, values)
 
-    async def _write_doc(self, doc):
+    async def write(self, doc):
         tree = await self._revs_tree(doc.id)
         full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
         if not full_path:

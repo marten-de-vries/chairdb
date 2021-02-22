@@ -18,10 +18,9 @@ import json
 import logging
 import uuid
 
-from ..utils import (async_iter, as_json, json_object_inner, parse_json_stream,
-                     rev, couchdb_json_to_doc, parse_rev, doc_to_couchdb_json,
-                     json_array_inner, LocalDocument, to_list,
-                     add_http_attachments)
+from ..utils import (as_json, json_object_inner, parse_json_stream, rev,
+                     couchdb_json_to_doc, parse_rev, doc_to_couchdb_json,
+                     json_array_inner, LocalDocument, add_http_attachments)
 from ..db.datatypes import NotFound
 from ..multipart import MultipartStreamParser
 from .utils import JSONResp, parse_query_arg
@@ -173,14 +172,13 @@ async def bulk_docs(request):
 
 
 async def write_all(db, docs):
-    writes = []
     for json_doc in docs:
         doc, todo = couchdb_json_to_doc(json_doc)
         assert not todo
-        assert not isinstance(doc, LocalDocument)
-        writes.append(doc)
-    async for result in db.write(async_iter(writes)):
-        yield as_json(result)
+        if isinstance(doc, LocalDocument):
+            await db.write_local(doc)
+        else:
+            await db.write(doc)
 
 
 # /doc
@@ -254,7 +252,7 @@ class DocumentEndpoint(HTTPEndpoint):
                 await get_db(request).write_local(doc.id, doc.body)
             else:
                 assert not parse_query_arg(request, 'new_edits', default=True)
-                await to_list(get_db(request).write(async_iter([doc])))
+                await get_db(request).write(doc)
 
         return JSONResp({'id': doc_id, 'rev': '0-1'}, 201)
 

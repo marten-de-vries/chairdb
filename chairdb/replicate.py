@@ -151,23 +151,24 @@ async def replicate_change(source, target, history_entry, id, opts):
     try:
         #  - 2.4.2.5.1. Fetch Changed Documents
         async with source.read(id, **opts) as result:
-            write_input = count_docs(result, history_entry)
+            async for doc in result:
+                if isinstance(doc, NotFound):
+                    continue  # required for skimdb. But how can this happen???
+                history_entry['docs_read'] += 1
 
-            # - 2.4.2.5.2. Upload Batch of Changed Documents
-            # - 2.4.2.5.3. Upload Document with Attachments
-            async for error in target.write(write_input):
-                print(repr(error))
-                history_entry['doc_write_failures'] += 1
+                await write_doc(target, doc, history_entry)
     except Exception as e:
-        print(repr(e))
+        print('read failure', repr(e))
 
 
-async def count_docs(docs, history_entry):
-    async for doc in docs:
-        if isinstance(doc, NotFound):
-            continue  # required for skimdb. But how can this happen???
-        history_entry['docs_read'] += 1
-        yield doc
+async def write_doc(target, doc, history_entry):
+    # - 2.4.2.5.2. Upload Batch of Changed Documents
+    # - 2.4.2.5.3. Upload Document with Attachments
+    try:
+        await target.write(doc)
+    except Exception as e:
+        history_entry['doc_write_failures'] += 1
+        print('write failure', repr(e))
 
 
 def build_history(existing_log, new_entry):

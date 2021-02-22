@@ -215,13 +215,10 @@ async def test_async(db):
     ]
     soon_overwritten = Document('mytest', 1, ('x',), {'Hello': 'World!'})
     soon_overwritten.add_attachment('test.csv', async_iter([b'1,2,3']))
-    docs = [
-        soon_overwritten,
-        Document('mytest', 2, ('y', 'x',), body=None),
-        {}  # not a document
-    ]
-    result = await to_list(db.write(async_iter(docs)))
-    assert len(result) == 1 and isinstance(result[0], AttributeError)
+    await db.write(soon_overwritten)
+    await db.write(Document('mytest', 2, ('y', 'x',), body=None))
+    with pytest.raises(AttributeError):
+        await db.write({})
     req = [
         # three different ways...
         ('mytest', {'revs': 'all'}),
@@ -250,7 +247,7 @@ async def test_async(db):
     # some more attachment testing
     new_doc = Document('csv', 1, ('a',), {})
     new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
-    assert not await to_list(db.write(async_iter([new_doc])))
+    await db.write(new_doc)
     async with db.read('csv', atts_since=[]) as resp:
         loaded_doc = await resp.__anext__()
         assert await to_list(loaded_doc.attachments['test.csv']) == [
@@ -262,4 +259,4 @@ async def test_async(db):
         # make sure re-inserting stub revision succeeds
         stub_doc.rev_num += 1
         stub_doc.path = ('b',) + stub_doc.path
-        assert not await to_list(db.write(async_iter([stub_doc])))
+        await db.write(stub_doc)

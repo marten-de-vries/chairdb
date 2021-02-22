@@ -6,8 +6,8 @@ import httpx
 
 from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from ..multipart import MultipartStreamParser
-from ..utils import (as_json, parse_json_stream, parse_rev, json_array_inner,
-                     rev, couchdb_json_to_doc, doc_to_couchdb_json,
+from ..utils import (as_json, parse_json_stream, parse_rev, rev,
+                     couchdb_json_to_doc, doc_to_couchdb_json,
                      json_object_inner, add_http_attachments)
 
 
@@ -118,21 +118,10 @@ class HTTPDatabase(httpx.AsyncClient):
         async for part in aiterable:
             yield part.encode('UTF-8')
 
-    async def write(self, docs):
-        header = '{"new_edits":false,"docs":['
-        docs_json = self._bulk_docs_json(docs)
-        body = json_array_inner(header, docs_json, lambda: ']}\n')
-        body_bytes = self._encode_aiter(body)
-        async with self._stream('POST', '/_bulk_docs', data=body_bytes,
-                                headers=JSON_REQ_HEADERS) as resp:
-            assert resp.status_code == httpx.codes.CREATED
-            async for row in parse_json_stream(resp.aiter_bytes(), 'items',
-                                               'item'):
-                yield row
-
-    async def _bulk_docs_json(self, docs):
-        async for doc in docs:
-            yield as_json(await doc_to_couchdb_json(doc))
+    async def write(self, doc):
+        params = {'new_edits': False}
+        doc_json = await doc_to_couchdb_json(doc)
+        await self._request('PUT', f'/{doc.id}', params=params, json=doc_json)
 
     async def write_local(self, id, doc):
         await self._request('PUT', f'/_local/{id}', json=doc)

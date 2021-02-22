@@ -1,6 +1,7 @@
 import anyio
 
 import contextlib
+import functools
 
 from .datatypes import Change, Missing
 from ..utils import to_list
@@ -101,6 +102,11 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
     you do so if at all possible as the asynchronous methods just add overhead.
 
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._transaction = None
+
     @property
     def id(self):
         """For identification of this specific database during replication. For
@@ -128,25 +134,38 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
         async for id, revs in remote:
             yield self.revs_diff_sync(id, revs)
 
-    async def write_local(self, id, doc):
-        self.write_local_sync(id, doc)
+    @contextlib.asynccontextmanager
+    async def all_or_nothing(self):
+        """Not public API, but required for supporting views."""
 
-    async def write(self, docs):
-        """Like CouchDB's _bulk_docs with new_edits=false"""
-
-        async for doc in docs:
-            try:
-                await self._syncify_attachments(doc)
-                self.write_sync(doc)
-            except Exception as exc:
-                yield exc
-
-    async def _syncify_attachments(self, doc):
-        if doc.attachments:
+        if self._transaction:
+            yield  # re-use the existing one
+        else:
+            actions = []
             async with anyio.create_task_group() as tg:
+                self._transaction = tg, actions
+                try:
+                    yield
+                finally:
+                    self._transaction = None
+            for deferred_action in actions:
+                deferred_action()
+
+    async def write_local(self, id, doc):
+        async with self.all_or_nothing():
+            action = functools.partial(self.write_local_sync, id, doc)
+            self._transaction[1].append(action)
+
+    async def write(self, doc):
+        """Like CouchDB's PUT with new_edits=false"""
+
+        async with self.all_or_nothing():
+            tg, actions = self._transaction
+            if doc.attachments:
                 for name, att in doc.attachments.items():
                     if not att.is_stub:
                         tg.spawn(self._syncify_att, doc, name, att)
+            actions.append(functools.partial(self.write_sync, doc))
 
     async def _syncify_att(self, doc, name, att):
         data_list = await to_list(att)

@@ -33,8 +33,8 @@ async def test_remote():  # noqa: C901
             query = [('unexisting', [(1, 'x'), (2, 'y')]), ('abc', [(1, 'a')])]
             async for change in db.revs_diff(async_iter(query)):
                 print(change)
-            async for result in db.write(async_iter(DOCS)):
-                print(result)  # succesful writes don't return anything
+            for doc in DOCS:
+                await db.write(doc)
             req = [
                 # three different ways...
                 ('mytest', {'revs': 'all'}),
