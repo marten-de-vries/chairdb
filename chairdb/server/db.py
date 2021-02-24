@@ -141,19 +141,23 @@ async def ensure_full_commit(request):
 
 async def all_docs(request):
     info = {'total_rows': 0}
-    items = all_docs_json(get_db(request), info)
+    start_key = (parse_query_arg(request, 'start_key') or
+                 parse_query_arg(request, 'startkey'))
+    end_key = (parse_query_arg(request, 'end_key') or
+               parse_query_arg(request, 'endkey'))
+    all_docs = get_db(request).all_docs(start_key=start_key, end_key=end_key)
+    items = all_docs_json(all_docs, info)
     gen_footer = functools.partial(all_docs_footer, info)
     generator = json_array_inner('{"offset":0,"rows":[', items, gen_footer)
 
     return StreamingResponse(generator, media_type='application/json')
 
 
-async def all_docs_json(db, store):
-    for key, (rev_tree, _) in db._byid.items():
-        branch = rev_tree.winner()
-        if branch.leaf_doc_ptr:
-            r = rev(*branch.leaf_rev_tuple)
-            yield as_json({'id': key, 'key': key, 'value': {'rev': r}})
+async def all_docs_json(all_docs, store):
+    async with all_docs as docs:
+        async for doc in docs:
+            r = rev(doc.rev_num, doc.path[0])
+            yield as_json({'id': doc.id, 'key': doc.id, 'value': {'rev': r}})
             store['total_rows'] += 1
 
 
@@ -166,9 +170,8 @@ async def bulk_docs(request):
     req = await request.json()
     assert not req.get('new_edits', True)
 
-    json_results = write_all(get_db(request), req['docs'])
-    generator = json_array_inner('[', json_results, lambda: ']\n')
-    return StreamingResponse(generator, 201, media_type='application/json')
+    await write_all(get_db(request), req['docs'])
+    return JSONResp([], 201)
 
 
 async def write_all(db, docs):

@@ -4,14 +4,18 @@ from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 from starlette.middleware import Middleware
 from starlette.staticfiles import StaticFiles
+from starlette.responses import StreamingResponse
 
+import anyio
 import sortedcontainers
+
 import uuid
 import os
 
 from .. import InMemoryDatabase
 from .db import build_db_app
-from .utils import JSONResp
+from .utils import JSONResp, parse_query_arg
+from ..utils import json_array_inner
 
 
 __version__ = "0.1"
@@ -34,6 +38,13 @@ SESSION = {
     "ok": True,
     "userCtx": {"name": None, "roles": ["_admin"]},
 }
+
+TOO_MANY_UUIDS = {
+    "error": "bad_request",
+    "reason": "count parameter too large",
+}
+
+MAX_UUIDS = 1000
 
 
 async def root(request):
@@ -70,6 +81,20 @@ async def session(request):
     return JSONResp(SESSION)
 
 
+async def uuids(request):
+    count = parse_query_arg(request, 'count', default=1)
+    if count > MAX_UUIDS:
+        return JSONResp(TOO_MANY_UUIDS, 400)
+    resp = json_array_inner('{"uuids": [\n', gen_uuids(count), lambda: ']}')
+    return StreamingResponse(resp, media_type='application/json')
+
+
+async def gen_uuids(count):
+    for _ in range(count):
+        yield f'"{uuid.uuid1().hex}"'
+        await anyio.sleep(0)  # checkpoint
+
+
 class DBLoaderMiddleware:
     """Automatically load the appropriate in-memory database into db_app's
     request.state.db, or return an error if there is no such database.
@@ -100,6 +125,7 @@ app = Starlette(routes=[
     Route('/_all_dbs', all_dbs),
     Route('/_session', session),
     Mount('/_utils', StaticFiles(directory=fauxton_path, html=True)),
+    Route('/_uuids', uuids),
     Route('/{db}/', put_db, methods=['PUT']),
     Route('/{db}/', delete_db, methods=['DELETE']),
     Mount('/{db}', db_app),

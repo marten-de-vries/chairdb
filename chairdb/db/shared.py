@@ -137,6 +137,8 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
     @contextlib.asynccontextmanager
     async def all_or_nothing(self):
         """Not public API, but required for supporting views."""
+        # TODO: add some kind of lock to prevent other calls from ending up in
+        # the current transaction
 
         if self._transaction:
             yield  # re-use the existing one
@@ -148,6 +150,12 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
                     yield
                 finally:
                     self._transaction = None
+            # replace indices with copies such that current readers keep access
+            # to the 'old' state
+            # TODO: move into memory.py? It's memory-specific
+            self.byid = self.byid.copy()
+            self.byseq = self.byseq.copy()
+            self.local = self.local.copy()
             for deferred_action in actions:
                 deferred_action()
 
@@ -173,6 +181,14 @@ class AsyncDatabaseMixin(ContinuousChangesMixin):
 
     async def read_local(self, id):
         return self.read_local_sync(id)
+
+    @contextlib.asynccontextmanager
+    async def all_docs(self, **opts):
+        yield self._all_docs(**opts)
+
+    async def _all_docs(self, **opts):
+        for doc in self.all_docs_sync(**opts):
+            yield doc
 
     @contextlib.asynccontextmanager
     async def read(self, id, **opts):
