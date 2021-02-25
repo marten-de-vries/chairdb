@@ -1,9 +1,11 @@
 import pytest
 
+import random
+
 from chairdb import (InMemoryDatabase, NotFound, PreconditionFailed, Document,
                      AttachmentMetadata)
 from chairdb.db.datatypes import AttachmentStub, Change, Missing
-from chairdb.utils import async_iter, to_list, anext
+from chairdb.utils import async_iter, to_list, anext, hashabledict
 
 
 @pytest.fixture
@@ -212,6 +214,32 @@ def test_attachment_errors(db):
     # ... which causes a crash
     with pytest.raises(PreconditionFailed):
         db.write_sync(doc)
+
+
+def test_collate(db):
+    docs = [
+        Document(None, 1, ('a',), {}),
+        Document(False, 1, ('b',), {}),
+        Document(True, 1, ('c',), {}),
+        Document(-5, 1, ('d',), {}),
+        Document(0.5, 1, ('e',), {}),
+        Document('abc', 1, ('f',), {}),
+        Document('Test', 1, ('g',), {}),
+        Document((), 1, ('h',), {}),
+        Document((None, 456), 1, ('i',), {}),
+        Document((None, '123'), 1, ('j',), {}),
+        Document((True, None), 1, ('k',), {}),
+        Document(hashabledict({}), 1, ('l',), {}),
+        Document(hashabledict({'hello': 'ZZZ'}), 1, ('m',), {}),
+        Document(hashabledict({'hello': 'World!', 'more': ''}), 1, ('n',), {}),
+    ]
+    random.shuffle(docs)  # make things interesting
+
+    with db.write_transaction_sync() as t:
+        for doc in docs:
+            t.write(doc)
+    all_revs_in_collation_order = [doc.path[0] for doc in db.all_docs_sync()]
+    assert all_revs_in_collation_order == list('abcdefghijklmn')
 
 
 @pytest.mark.anyio

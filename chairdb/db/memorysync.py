@@ -39,7 +39,7 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
             return (5, tuple(self._collate(k) for k in key))
         if isinstance(key, collections.abc.Mapping):
             return (6, tuple(self._collate(k) for k in key))
-        raise KeyError(f'Unsupported key: {key}')
+        raise KeyError(f'Unsupported key: {key}')  # pragma: no cover
 
     def all_docs_sync(self, **opts):
         verify_no_attachments(opts.get('doc_opts', {}))

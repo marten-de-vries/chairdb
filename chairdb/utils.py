@@ -231,3 +231,10 @@ async def new_edit(updated_doc):
     updated_doc.path = (hash.hexdigest(),) + updated_doc.path
 
     return updated_doc
+
+
+# misc
+
+class hashabledict(dict):
+    def __hash__(self):
+        return hash(tuple(self.items()))
