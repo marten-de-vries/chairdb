@@ -5,7 +5,7 @@ import databases
 import pprint
 
 from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
-                     NotFound, app, Document)
+                     NotFound, app, Document, anext)
 
 pytestmark = pytest.mark.anyio
 
@@ -63,8 +63,9 @@ async def test_replicate_multi(anyio_backend, sql_target, brassbandwirdum,
     target2 = InMemoryDatabase(id='another-test')
     result4 = await replicate(sql_target, target2)
     assert result4['ok']
-    async with target2.read('_design/brassbandwirdum', atts_since=[]) as resp:
-        doc = await resp.__anext__()
+    async with target2.read_with_attachments('_design/brassbandwirdum',
+                                             atts_since=[]) as resp:
+        doc = await anext(resp)
         print(doc.attachments.keys())
 
 

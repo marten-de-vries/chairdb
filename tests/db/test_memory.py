@@ -2,7 +2,7 @@ import pytest
 
 from chairdb import (InMemoryDatabase, Change, NotFound, Document, Missing,
                      AttachmentStub, AttachmentMetadata, PreconditionFailed)
-from chairdb.utils import async_iter, to_list
+from chairdb.utils import async_iter, to_list, anext
 
 
 @pytest.fixture
@@ -39,6 +39,11 @@ def test_revs_diff(db):
     assert db.revs_diff_sync('unexisting', [(1, 'c')]) == m2
 
 
+def test_all_docs(db):
+    doc = insert_doc(db)
+    assert list(db.all_docs_sync(doc_opts={'body': True})) == [doc]
+
+
 def test_changes(db):
     insert_doc(db)
     assert list(db.changes_sync()) == [
@@ -71,7 +76,7 @@ def test_linear_history(db):
 
 def test_remove(db):
     insert_doc(db)
-    doc2 = Document('test', 2, ('b', 'a'), body=None)
+    doc2 = Document('test', 2, ('b', 'a'), is_deleted=True)
     db.write_sync(doc2)
     assert list(db.read_sync('test')) == [doc2]
     assert list(db.changes_sync()) == [
@@ -115,7 +120,7 @@ def test_old_conflict(db):
     ]
 
     # remove current winner
-    db.write_sync(Document('test', 4, ('e', 'c', 'b', 'a'), body=None))
+    db.write_sync(Document('test', 4, ('e', 'c', 'b', 'a'), is_deleted=True))
 
     # check the winner is the 'old' leaf now.
     assert list(db.read_sync('test')) == [
@@ -123,11 +128,11 @@ def test_old_conflict(db):
     ]
 
     # remove the remaining non-deleted leaf as well
-    db.write_sync(Document('test', 3, ('f', 'd', 'a'), body=None))
+    db.write_sync(Document('test', 3, ('f', 'd', 'a'), is_deleted=True))
 
     # check if the current winner is deleted - and has switched back again
     assert list(db.read_sync('test')) == [
-        Document('test', 4, ('e', 'c', 'b', 'a'), body=None),
+        Document('test', 4, ('e', 'c', 'b', 'a'), is_deleted=True),
     ]
 
 
@@ -170,18 +175,22 @@ def test_attachment(db):
     assert all(a.is_stub for a in read_doc.attachments.values())
 
     # retrieve text.txt by name
-    read_doc2 = next(db.read_sync('test', att_names=['text.txt']))
-    assert b''.join(read_doc2.attachments['text.txt']) == b'Hello World!'
+    with db.read_with_attachments_sync('test', att_names=['text.txt']) as resp:
+        read_doc2 = next(resp)
+        assert b''.join(read_doc2.attachments['text.txt']) == b'Hello World!'
 
     # retrieve test.json because it's newer
-    read_doc3 = next(db.read_sync('test', revs='all', atts_since=[(1, 'a')]))
-    assert b''.join(read_doc3.attachments['test.json']) == b'{}'
-    assert read_doc3.attachments['text.txt'].is_stub
+    with db.read_with_attachments_sync('test', revs='all',
+                                       atts_since=[(1, 'a')]) as resp:
+        read_doc3 = next(resp)
+        assert b''.join(read_doc3.attachments['test.json']) == b'{}'
+        assert read_doc3.attachments['text.txt'].is_stub
 
     # retrieve both
-    read_doc4 = next(db.read_sync('test', atts_since=[]))
-    assert not any(a.is_stub for a in read_doc4.attachments.values())
-    assert b''.join(read_doc3.attachments['test.json']) == b'{}'
+    with db.read_with_attachments_sync('test', atts_since=[]) as resp:
+        read_doc4 = next(resp)
+        assert not any(a.is_stub for a in read_doc4.attachments.values())
+        assert b''.join(read_doc3.attachments['test.json']) == b'{}'
 
 
 def test_attachment_errors(db):
@@ -216,7 +225,8 @@ async def test_async(db):
     soon_overwritten = Document('mytest', 1, ('x',), {'Hello': 'World!'})
     soon_overwritten.add_attachment('test.csv', async_iter([b'1,2,3']))
     await db.write(soon_overwritten)
-    await db.write(Document('mytest', 2, ('y', 'x',), body=None))
+    assert len(await to_list(db.all_docs())) == 1
+    await db.write(Document('mytest', 2, ('y', 'x',), is_deleted=True))
     with pytest.raises(AttributeError):
         await db.write({})
     req = [
@@ -226,17 +236,16 @@ async def test_async(db):
         ('mytest', {'revs': [(2, 'y')]}),
     ]
     for id, opts in req:
-        async with db.read(id, **opts) as resp:
-            assert await to_list(resp) == [
-                Document('mytest', 2, ('y', 'x',), body=None),
-            ]
+        assert await to_list(db.read(id, **opts)) == [
+            Document('mytest', 2, ('y', 'x'), is_deleted=True),
+        ]
+    assert await to_list(db.all_docs()) == []
     assert await to_list(db.changes()) == [
         Change('mytest', seq=2, deleted=True, leaf_revs=[(2, 'y')])
     ]
     # try never-existing doc
     with pytest.raises(NotFound):
-        async with db.read('abc') as result:
-            await to_list(result)
+        await to_list(db.read('abc'))
 
     assert 'memory' in await db.id
 
@@ -248,15 +257,14 @@ async def test_async(db):
     new_doc = Document('csv', 1, ('a',), {})
     new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
     await db.write(new_doc)
-    async with db.read('csv', atts_since=[]) as resp:
-        loaded_doc = await resp.__anext__()
+    async with db.read_with_attachments('csv', atts_since=[]) as resp:
+        loaded_doc = await anext(resp)
         assert await to_list(loaded_doc.attachments['test.csv']) == [
             b'4,5,6'
         ]
-    async with db.read('csv') as resp:
-        stub_doc = await resp.__anext__()
-        assert stub_doc.attachments['test.csv'].is_stub
-        # make sure re-inserting stub revision succeeds
-        stub_doc.rev_num += 1
-        stub_doc.path = ('b',) + stub_doc.path
-        await db.write(stub_doc)
+    stub_doc = await anext(db.read('csv'))
+    assert stub_doc.attachments['test.csv'].is_stub
+    # make sure re-inserting stub revision succeeds
+    stub_doc.rev_num += 1
+    stub_doc.path = ('b',) + stub_doc.path
+    await db.write(stub_doc)

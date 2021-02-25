@@ -6,9 +6,9 @@ import httpx
 
 from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
 from ..multipart import MultipartStreamParser
-from ..utils import (as_json, parse_json_stream, parse_rev, rev,
-                     couchdb_json_to_doc, doc_to_couchdb_json,
-                     json_object_inner, add_http_attachments)
+from ..utils import (as_json, couchdb_json_to_doc, doc_to_couchdb_json, anext,
+                     json_object_inner, add_http_attachments, parse_rev, rev,
+                     verify_no_attachments, parse_json_stream)
 
 
 JSON_REQ_HEADERS = {'Content-Type': 'application/json'}
@@ -126,17 +126,17 @@ class HTTPDatabase(httpx.AsyncClient):
     async def write_local(self, id, doc):
         await self._request('PUT', f'/_local/{id}', json=doc)
 
-    @contextlib.asynccontextmanager
     async def read(self, id, **opts):
-        params = self._read_params(id, **opts)
-        send_stream, receive_stream = anyio.create_memory_object_stream()
-        async with self._stream('GET', '/' + id, params=params) as resp:
-            async with anyio.create_task_group() as tg:
-                tg.spawn(self._read, send_stream, tg, params, resp)
-                async with receive_stream:
-                    yield receive_stream
+        verify_no_attachments(opts)
 
-    def _read_params(self, id, revs=None, att_names=None, atts_since=None):
+        async with self._start_read(id, **opts) as args:
+            # no task group required without attachments
+            async for doc in self._read(*args, tg=None):
+                yield doc
+
+    @contextlib.asynccontextmanager
+    async def _start_read(self, id, revs=None, att_names=None,
+                          atts_since=None):
         assert att_names is None
         params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
@@ -145,43 +145,57 @@ class HTTPDatabase(httpx.AsyncClient):
             params['open_revs'] = as_json([rev(*r) for r in revs])
         if atts_since is not None:
             params['atts_since'] = as_json([rev(*r) for r in atts_since])
-        return params
 
-    async def _read(self, send_stream, tg, params, resp):
-        async with send_stream:
-            if resp.status_code == httpx.codes.NOT_FOUND:
-                message = json.loads(await resp.aread())
-                await send_stream.send(NotFound(message))
-            else:
+        async with self._stream('GET', '/' + id, params=params) as resp:
+            yield params, resp
+
+    async def _read(self, params, resp, tg):
+        if resp.status_code == httpx.codes.NOT_FOUND:
+            message = json.loads(await resp.aread())
+            yield NotFound(message)
+        else:
+            assert resp.status_code == httpx.codes.OK
+
+            if 'open_revs' in params:
+                # multiple docs
                 assert resp.status_code == httpx.codes.OK
+                async for part in MultipartStreamParser(resp):
+                    yield await self._read_single_doc(part, tg)
+            else:
+                yield await self._read_single_doc(resp, tg)
 
-                if 'open_revs' in params:
-                    # multiple docs
-                    assert resp.status_code == httpx.codes.OK
-                    async for part in MultipartStreamParser(resp):
-                        await self._read_single_doc(send_stream, tg, part)
-                else:
-                    await self._read_single_doc(send_stream, tg, resp)
-
-    async def _read_single_doc(self, send_stream, tg, resp):
+    async def _read_single_doc(self, resp, tg):
         if resp.headers['Content-Type'].startswith('multipart/'):
             parser = MultipartStreamParser(resp).__aiter__()
-            part = await parser.__anext__()
+            part = await anext(parser)
             assert part.headers == {'Content-Type': 'application/json'}
             doc, todo = couchdb_json_to_doc(json.loads(await part.aread()))
             add_http_attachments(doc, todo, parser, tg)
-            await send_stream.send(doc)
+            return doc
         else:
             assert resp.headers['Content-Type'] == 'application/json'
             doc, todo = couchdb_json_to_doc(json.loads(await resp.aread()))
             assert not todo
-            await send_stream.send(doc)
+            return doc
+
+    @contextlib.asynccontextmanager
+    async def read_with_attachments(self, id, **opts):
+        send_stream, receive_stream = anyio.create_memory_object_stream()
+        async with self._start_read(id, **opts) as args:
+            async with anyio.create_task_group() as tg:
+                tg.spawn(self._read_to_stream, send_stream, *args, tg)
+                async with receive_stream:
+                    yield receive_stream
+
+    async def _read_to_stream(self, send_stream, *args):
+        async with send_stream:
+            async for doc in self._read(*args):
+                await send_stream.send(doc)
 
     async def read_local(self, id):
-        async with self.read('_local/' + id) as result:
-            doc = await result.__anext__()
-            with contextlib.suppress(AttributeError):
-                return doc.body
+        doc = await anext(self.read('_local/' + id))
+        with contextlib.suppress(AttributeError):
+            return doc.body
 
     async def ensure_full_commit(self):
         await self._request('POST', '_ensure_full_commit')

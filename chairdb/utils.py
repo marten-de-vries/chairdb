@@ -46,6 +46,10 @@ async def json_object_inner(header, iterator, gen_footer):
 
 
 # async helpers
+async def anext(docs):
+    return await docs.__anext__()
+
+
 async def aenumerate(iterable):
     counter = 0
     async for item in iterable:
@@ -63,6 +67,10 @@ async def to_list(asynciterable):
 
 
 # couchdb helpers
+def verify_no_attachments(opts):
+    if 'att_names' in opts or 'atts_since' in opts:
+        raise ValueError('cannot retrieve attachments')
+
 
 class LocalDocument(AbstractDocument):
     pass

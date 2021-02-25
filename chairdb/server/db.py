@@ -18,7 +18,7 @@ import json
 import logging
 import uuid
 
-from ..utils import (as_json, json_object_inner, parse_json_stream, rev,
+from ..utils import (as_json, json_object_inner, parse_json_stream, rev, anext,
                      couchdb_json_to_doc, parse_rev, doc_to_couchdb_json,
                      json_array_inner, LocalDocument, add_http_attachments)
 from ..db.datatypes import NotFound
@@ -154,11 +154,10 @@ async def all_docs(request):
 
 
 async def all_docs_json(all_docs, store):
-    async with all_docs as docs:
-        async for doc in docs:
-            r = rev(doc.rev_num, doc.path[0])
-            yield as_json({'id': doc.id, 'key': doc.id, 'value': {'rev': r}})
-            store['total_rows'] += 1
+    async for doc in all_docs:
+        r = rev(doc.rev_num, doc.path[0])
+        yield as_json({'id': doc.id, 'key': doc.id, 'value': {'rev': r}})
+        store['total_rows'] += 1
 
 
 def all_docs_footer(info):
@@ -196,14 +195,15 @@ class DocumentEndpoint(HTTPEndpoint):
         doc_id = self.doc_id(request)
         revs, multi = self._parse_revs(request)
         atts_since = parse_query_arg(request, 'atts_since', [])
-        async with db.read(doc_id, revs=revs, atts_since=atts_since) as resp:
+        async with db.read_with_attachments(doc_id, revs=revs,
+                                            atts_since=atts_since) as resp:
             if not parse_query_arg(request, 'revs', default=False):
                 logger.warn('revs=true not requested, but we do it anyway!')
 
             if multi:
                 return await self._multi_response(resp)
             else:
-                return await self._single_response(await resp.__anext__())
+                return await self._single_response(await anext(resp))
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -245,7 +245,7 @@ class DocumentEndpoint(HTTPEndpoint):
                 assert not todo
             else:
                 parser = MultipartStreamParser(request).__aiter__()
-                first = await parser.__anext__()
+                first = await anext(parser)
                 assert first.headers == {'Content-Type': 'application/json'}
                 doc_json = json.loads(await first.aread())
                 doc, todo = couchdb_json_to_doc(doc_json, doc_id)
@@ -284,12 +284,13 @@ class AttachmentEndpoint(HTTPEndpoint):
         return request.path_params['id'], request.path_params['attachment']
 
     async def get(self, request):
-        id, attachment = self.info(request)
+        id, att_name = self.info(request)
 
-        async with get_db(request).read(id, att_names=[attachment]) as docs:
-            doc = await docs.__anext__()
+        db = get_db(request)
+        async with db.read_with_attachments(id, att_names=[att_name]) as docs:
+            doc = await anext(docs)
 
-            att = doc.attachments[attachment]
+            att = doc.attachments[att_name]
             resp = StreamingResponse(att, headers={
                 'Content-Type': att.meta.content_type,
                 'Content-Length': str(att.meta.length),

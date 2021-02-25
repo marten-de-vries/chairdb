@@ -1,6 +1,8 @@
 import anyio
 import re
 
+from .utils import anext
+
 MULTIPART_REGEX = 'multipart/(?:mixed|related); boundary="?([^"$]+)"?$'
 
 
@@ -34,7 +36,7 @@ class MultipartStreamParser:
             return await self.parsing_paused_event.wait()
         self.parsing_paused_event = anyio.create_event()
 
-        chunk = await self.input.__anext__()
+        chunk = await anext(self.input)
         for args in self.parser.feed(chunk):
             self._process_parsed(*args)
 

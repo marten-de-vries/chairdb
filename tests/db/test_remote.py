@@ -1,11 +1,11 @@
 import pytest
 
-from chairdb import HTTPDatabase, Document
+from chairdb import HTTPDatabase, Document, anext
 from chairdb.utils import async_iter
 
 DOCS = [
     Document('mytest', 1, ('x',), {'Hello': 'World!'}),
-    Document('mytest', 2, ('y', 'x'), body=None)
+    Document('mytest', 2, ('y', 'x'), is_deleted=True)
 ]
 
 pytestmark = pytest.mark.anyio
@@ -14,7 +14,8 @@ pytestmark = pytest.mark.anyio
 async def test_remote_att():
     url = 'http://localhost:5984/brassbandwirdum'
     async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
-        async with db.read('_design/brassbandwirdum', atts_since=[]) as resp:
+        async with db.read_with_attachments('_design/brassbandwirdum',
+                                            atts_since=[]) as resp:
             async for doc in resp:
                 for name, att in doc.attachments.items():
                     total_length = sum([len(chunk) async for chunk in att])
@@ -42,12 +43,9 @@ async def test_remote():  # noqa: C901
                 ('mytest', {'revs': [(2, 'y')]}),
             ]
             for id, opts in req:
-                async with db.read(id, **opts) as resp:
-                    async for result in resp:
-                        print(result)
-            async for change in db.changes():
-                print(change)
-                break
+                async for result in db.read(id, **opts):
+                    print(result)
+            print(await anext(db.changes()))
 
             assert 'remote' in await db.id
         finally:

@@ -59,31 +59,42 @@ class DataType:
 
 
 class AbstractDocument(DataType):
-    __slots__ = ('id', 'body')
+    __slots__ = ('id', 'body', '_is_deleted')
 
-    def __init__(self, id, body):
+    def __init__(self, id, body, is_deleted=False):
+        if is_deleted:
+            assert body is None
+
         self.id = id
         self.body = body
+        self.is_deleted = is_deleted
 
-    @property
-    def is_deleted(self):
-        return self.body is None
+    def _get_deleted(self):
+        return self._is_deleted
+
+    def _set_deleted(self, deleted):
+        self._is_deleted = deleted
+        if deleted:
+            self.body = None
+        elif not self.body:
+            self.body = {}
+
+    is_deleted = property(fget=_get_deleted, fset=_set_deleted)
 
 
 class Document(AbstractDocument):
     __slots__ = ('rev_num', 'path', 'attachments')
 
-    def __init__(self, id, rev_num, path, body, attachments=None):
-        super().__init__(id, body)
-
-        if self.is_deleted:
-            assert not attachments
-        elif not attachments:
-            attachments = {}
+    def __init__(self, id, rev_num, path, body=None, attachments=None,
+                 is_deleted=False):
+        if is_deleted:
+            assert attachments is None
 
         self.rev_num = rev_num
         self.path = path
         self.attachments = attachments
+
+        super().__init__(id, body, is_deleted)
 
     # proxy
     def __getitem__(self, key):
@@ -94,6 +105,16 @@ class Document(AbstractDocument):
             content_type = mimetypes.guess_type(name)[0]
         attachment = NewAttachment(self.rev_num, content_type, iterator)
         self.attachments[name] = attachment
+
+    def _set_deleted(self, deleted):
+        super()._set_deleted(deleted)
+        if deleted:
+            self.attachments = None
+        elif not self.attachments:
+            self.attachments = {}
+
+    is_deleted = property(fget=AbstractDocument._get_deleted,
+                          fset=_set_deleted)
 
 
 class NewAttachment:
@@ -138,9 +159,3 @@ class AttachmentStub(typing.NamedTuple):
     @property
     def is_stub(self):
         return True
-
-# - add attachments param
-# 	- no attachments
-# 	- all attachments
-# 	- attachments with some name(s)?
-# 	- attachments since a certain rev

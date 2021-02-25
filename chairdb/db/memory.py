@@ -1,154 +1,172 @@
-import sortedcontainers
+import anyio
 
-import collections
-import numbers
-import uuid
+import contextlib
 
-from .datatypes import NotFound, Document
-from .attachments import AttachmentStore
-from .revtree import RevisionTree
-from .shared import build_change, revs_diff, read_docs, AsyncDatabaseMixin
-from ..utils import InMemoryAttachment
+from ..utils import to_list, verify_no_attachments
+from .memorysync import SyncInMemoryDatabase, SyncWriteTransaction
+from .shared import (ContinuousChangesMixin, TransactionBasedDBMixin,
+                     as_future_result)
 
 
-class InMemoryDatabase(AsyncDatabaseMixin):
-    """For documentation, see the InMemoryDatabase class.
+class InMemoryDatabase(SyncInMemoryDatabase, TransactionBasedDBMixin,
+                       ContinuousChangesMixin):
+    """An in-memory implementation of a CouchDB-compatible database.
 
-    Don't edit the database while iterating over it, unless you replace the ind
-    indices with copies.
+    The database does not keep the documents for non-leaf revisions for
+    simplicity, which has the nice side-effect of effectively auto-compacting
+    the database continously. This means you cannot use revisions as a history
+    mechanism, though. (But that isn't recommended anyway.)
+
+    Purging is not implemented, but everything essential for replication is.
+
+    Note that writing acts similar to _bulk_docs with new_edits=false. So you
+    need to manually generate new revisions (and check for conflicts, I guess).
+
+    An in-memory database is (obviously) implemented synchronously. But such
+    an interface does not make sense for databases that have to be reached
+    through the network, or arguably even for on-disk databases. To be
+    compatible with those, we wrap the (synchronous) in-memory database with
+    an asynchronous API. Note that because this class inherits from
+    SyncInMemoryDatabase, you can still use the synchronous API. We recommend
+    you do so if at all possible as the asynchronous methods just add overhead.
 
     """
-    def __init__(self, id=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    async def all_docs(self, **opts):
+        verify_no_attachments(opts.get('doc_opts', {}))
 
-        self.id_sync = (id or uuid.uuid4().hex) + 'memory'
-        self.update_seq_sync = 0
-        self.revs_limit_sync = 1000
+        async with self.read_transaction() as t:
+            async for doc in t.all_docs(**opts):
+                yield doc
 
-        # id -> document (dict)
-        self.local = sortedcontainers.SortedDict(self._collate)
-        # id -> (rev_tree, last_update_seq)
-        self.byid = sortedcontainers.SortedDict(self._collate)
-        # seq -> id (str)
-        self.byseq = sortedcontainers.SortedDict()
+    async def ensure_full_commit(self):
+        """a no-op for an in-memory db"""
 
-    def _collate(self, key):  # noqa: C901
-        if key is None:
-            return (1,)
-        if isinstance(key, bool):
-            return (2, key)
-        if isinstance(key, numbers.Number):
-            return (3, key)
-        if isinstance(key, str):
-            return (4, key.casefold())  # TODO: full-blown unicode collate?
-        if isinstance(key, collections.abc.Sequence):
-            return (5, tuple(self.collate(k) for k in key))
-        if isinstance(key, collections.abc.Mapping):
-            return (6, tuple(self.collate(k) for k in key))
-        raise KeyError(f'Unsupported key: {key}')
-
-    def all_docs_sync(self, *, start_key=None, end_key=None, descending=False,
-                      read_opts={}):
-        # TODO: also support disabling 'include_docs' using read_opts
-
-        iter = self.byid.irange(start_key, end_key, reverse=descending)
-        for id in iter:
-            rev_tree, _ = self.byid[id]
-            branch = rev_tree.winner()
-            # read_opts: atts_since & att_names
-            yield from self._read_doc(id, branch, **read_opts)
-
-    def changes_sync(self, since=None):
-        """If we ever support style='main_only' then storing winner metadata in
-        the byseq index would make sense. Now, not so much. We need to query
-        the by_id index for the revision tree anyway...
+    @property
+    def id(self):
+        """For identification of this specific database during replication. For
+        a (volatile) in-memory database, a random uuid (i.e. the default) is
+        actually quite a reasonable choice.
 
         """
-        for seq in self.byseq.irange(minimum=since, inclusive=(False, False)):
-            id = self.byseq[seq]
-            rev_tree, _ = self.byid[id]
-            yield build_change(id, seq, rev_tree)
+        return as_future_result(self.id_sync)
 
-    def revs_diff_sync(self, id, revs):
-        try:
-            rev_tree, _ = self.byid[id]
-        except KeyError:
-            rev_tree = RevisionTree()
-        return revs_diff(id, revs, rev_tree)
+    async def read(self, id, **opts):
+        verify_no_attachments(opts)
 
-    def write_local_sync(self, id, doc):
-        if doc is None:
-            self.local.pop(id, None)  # silence KeyError
-        else:
-            self.local[id] = doc
+        async with self.read_transaction() as t:
+            async for doc in t.read(id, **opts):
+                yield doc
 
-    def write_sync(self, doc):
-        # get the new document's path and check if it replaces something
-        try:
-            tree, last_update_seq = self.byid[doc.id]
-        except KeyError:
-            tree, last_update_seq = RevisionTree(), None
+    @contextlib.asynccontextmanager
+    async def read_transaction(self):
+        """Not supported by all databases, but required for (local) views."""
 
-        full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
-        if not full_path:
-            return  # document already in the database.
+        with self.read_transaction_sync() as t:
+            yield ReadTransaction(t)
 
-        doc_ptr = self._create_doc_ptr(doc, old_ptr)
-        # insert or replace in the rev tree
-        tree.update(doc.rev_num, full_path, doc_ptr, old_i,
-                    self.revs_limit_sync)
+    @property
+    def revs_limit(self):
+        return as_future_result(self.revs_limit_sync)
 
-        self.update_seq_sync += 1
-        # actual insertion by updating the document info in the indices
-        self.byid[doc.id] = tree, self.update_seq_sync
-        # update the by seq index by first removing a previous reference to the
-        # current document (if there is one), and then inserting a new one.
-        if last_update_seq:
-            del self.byseq[last_update_seq]
-        self.byseq[self.update_seq_sync] = doc.id
+    async def set_revs_limit(self, value):
+        self.revs_limit_sync = value
 
-        # Let superclass(es) know stuff changed
-        self._updated()
+    @property
+    def update_seq(self):
+        """Each database modification increases this. Starting at zero by
+        convention.
 
-    def _create_doc_ptr(self, doc, old_ptr):
-        """A doc_ptr is a (body, attachments) tuple for the in-memory case."""
+        """
+        return as_future_result(self.update_seq_sync)
 
-        doc_ptr = None
-        if not doc.is_deleted:
-            try:
-                _, att_store = old_ptr
-            except TypeError:
-                att_store = AttachmentStore()
-            _, new = att_store.merge(doc.attachments)
-            for name, attachment in new:
-                # first read
-                data_ptr = b''.join(attachment)
-                # then store. In that order, or attachment.meta isn't
-                # necessarily up-to-date yet
-                att_store.add(name, attachment.meta, data_ptr)
-            doc_ptr = (doc.body, att_store)
-        return doc_ptr
+    @contextlib.asynccontextmanager
+    async def write_transaction(self):
+        """Not supported by all databases but required for (local) views."""
 
-    def read_local_sync(self, id):
-        return self.local.get(id)
+        if not hasattr(self, '_write_lock'):
+            self._write_lock = anyio.create_lock()
 
-    def read_sync(self, id, *, revs=None, att_names=None, atts_since=None):
-        try:
-            # find it using the 'by id' index
-            rev_tree, _ = self.byid[id]
-        except KeyError as e:
-            raise NotFound(id) from e
+        actions = []
+        async with self._write_lock:
+            async with anyio.create_task_group() as tg:
+                yield WriteTransaction(tg, actions)
+            self._dispatch_actions(actions)
 
-        for branch in read_docs(id, revs, rev_tree):
-            yield from self._read_doc(id, branch, att_names, atts_since)
 
-    def _read_doc(self, id, branch, att_names=None, atts_since=None):
-        try:
-            doc, att_store = branch.leaf_doc_ptr
-        except TypeError:
-            doc, atts = None, None
-        else:
-            atts, todo = att_store.read(branch, att_names, atts_since)
-            for name, info in todo:
-                atts[name] = InMemoryAttachment(info.meta, info.data_ptr)
-        yield Document(id, branch.leaf_rev_num, branch.path, doc, atts)
+def asyncify_rt_generator(method_name):
+    async def proxy(self, *args, **kwargs):
+        for item in getattr(self.t, method_name)(*args, **kwargs):
+            yield item
+    return proxy
+
+
+def asyncify_rt_method(method_name):
+    async def proxy(self, *args, **kwargs):
+        return getattr(self.t, method_name)(*args, **kwargs)
+    return proxy
+
+
+class ReadTransaction:
+    def __init__(self, t):
+        self.t = t
+
+    all_docs = asyncify_rt_generator('all_docs')
+    changes = asyncify_rt_generator('changes')
+    read = asyncify_rt_generator('read')
+    read.__doc__ = """
+        Like CouchDB's GET dbname/docid?latest=true. 'id' is the document
+        id. `opts["revs"]`` specify which version(s) of said document you want
+        to access. 'revs' can be:
+
+        - 'None' (what you would get by default from CouchDB, i.e. the winner)
+        - 'all' (what you would get from CouchDB by include 'open_revs=all',
+          i.e. all leafs)
+        - a list of revisions (which you would get from CouchDB when manually
+          specifying 'open_revs=[...]'.
+
+        Note that, for non-winner values of revs, this can return multiple
+        document leafs. That's why this method is an (async) generator.
+
+        By default, attachment contents are not retrieved. Only 'stub'
+        information about them is returned. You can force attachment retrieval
+        using two options:
+        - revs['att_names'] allows you to specify a list of attachment names to
+          retrieve. Defaults to None.
+        - revs['atts_since'] allows you to specify a list of revisions. Any
+          attachment that was added later is returned. Note that you can use
+          this to return all attachments by setting it to an empty list.
+          Defaults to None. (Which differs from an empty list!)
+
+        Finally, opts['body']=True determines whether to retrieve the document
+        body. If you only need an attachment, or revision information, you can
+        set it to False.
+
+        """.lstrip()
+    read_local = asyncify_rt_method('read_local')
+    revs_diff = asyncify_rt_method('revs_diff')
+
+
+class WriteTransaction(SyncWriteTransaction):
+    def __init__(self, tg, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._tg = tg
+
+    def write(self, doc):
+        for name, att in (doc.attachments or {}).items():
+            if not att.is_stub:
+                self._tg.spawn(self._syncify_att, doc, name, att)
+
+        super().write(doc)
+
+    async def _syncify_att(self, doc, name, att):
+        data_list = await to_list(att)
+        doc.attachments[name] = SyncAttachment(att.meta, data_list)
+
+
+class SyncAttachment(list):
+    def __init__(self, meta, data_list):
+        super().__init__(data_list)
+
+        self.is_stub = False
+        self.meta = meta

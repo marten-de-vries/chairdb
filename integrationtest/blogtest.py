@@ -21,7 +21,7 @@ async def main():
         print(doc)
 
     server_db.write_sync(Document('roadside', 3, ('b617', '6e05', '1a9c'),
-                                  body=None))
+                                  is_deleted=None))
     server_db.write_sync(Document('roadside', 3, ('5bd6', 'e3b0', '1a9c'),
                                   {'trees_count': 42}))
 

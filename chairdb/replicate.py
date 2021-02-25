@@ -150,7 +150,7 @@ async def revs_diff_input(changes, history_entry):
 async def replicate_change(source, target, history_entry, id, opts):
     try:
         #  - 2.4.2.5.1. Fetch Changed Documents
-        async with source.read(id, **opts) as result:
+        async with source.read_with_attachments(id, **opts) as result:
             async for doc in result:
                 if isinstance(doc, NotFound):
                     continue  # required for skimdb. But how can this happen???

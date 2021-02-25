@@ -7,7 +7,7 @@ from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
 from .revtree import RevisionTree, Branch
 from .attachments import AttachmentStore, AttachmentRecord
 from .datatypes import Document, AttachmentMetadata, NotFound
-from ..utils import as_json
+from ..utils import as_json, verify_no_attachments
 
 TABLE_CREATE = [
     """CREATE TABLE revision_trees (
@@ -178,8 +178,12 @@ class SQLDatabase(ContinuousChangesMixin):
             data_ptr.append(chunk_ptr)
         att_store.add(name, att.meta, data_ptr)
 
+    def read(self, id, **opts):
+        verify_no_attachments(opts)
+        return self._read(id, **opts)
+
     @contextlib.asynccontextmanager
-    async def read(self, id, **opts):
+    async def read_with_attachments(self, id, **opts):
         yield self._read(id, **opts)
 
     async def _read(self, id, **opts):
