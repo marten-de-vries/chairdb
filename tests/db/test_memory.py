@@ -1,7 +1,8 @@
 import pytest
 
-from chairdb import (InMemoryDatabase, Change, NotFound, Document, Missing,
-                     AttachmentStub, AttachmentMetadata, PreconditionFailed)
+from chairdb import (InMemoryDatabase, NotFound, PreconditionFailed, Document,
+                     AttachmentMetadata)
+from chairdb.db.datatypes import AttachmentStub, Change, Missing
 from chairdb.utils import async_iter, to_list, anext
 
 

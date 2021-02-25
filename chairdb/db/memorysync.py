@@ -123,7 +123,7 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
                 # then store. In that order, or attachment.meta isn't
                 # necessarily up-to-date yet
                 att_store.add(name, attachment.meta, data_ptr)
-            doc_ptr = (doc.body, att_store)
+            doc_ptr = (doc.body.copy(), att_store)
         return doc_ptr
 
     def _write_local_impl(self, id, doc):
@@ -180,6 +180,7 @@ class SyncReadTransaction:
             doc_body, atts = None, None
         else:
             doc_body, att_store = branch.leaf_doc_ptr
+            doc_body = doc_body.copy()
             if not body:
                 doc_body = None
 

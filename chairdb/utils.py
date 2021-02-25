@@ -3,6 +3,7 @@ import ijson
 
 import base64
 import contextlib
+import hashlib
 import json
 import typing
 import zlib
@@ -134,7 +135,10 @@ class InMemoryAttachment(typing.NamedTuple):
 
 
 async def doc_to_couchdb_json(doc):
-    r = rev(doc.rev_num, doc.path[0])
+    try:
+        r = rev(doc.rev_num, doc.path[0])
+    except IndexError:
+        r = None  # for docs that were just created and are new edits
     revs = {'start': doc.rev_num, 'ids': doc.path}
     json = {'_id': doc.id, '_rev': r, '_revisions': revs}
     if doc.attachments:
@@ -214,3 +218,16 @@ def rev(rev_num, rev_hash):
 def parse_rev(rev):
     num, hash = rev.split('-')
     return int(num), hash
+
+
+async def new_edit(updated_doc):
+    # TODO: only include attachment stubs? That would also make it possible to
+    # make this function sync.
+    hash = hashlib.md5()
+    serialized = json.dumps(await doc_to_couchdb_json(updated_doc))
+    hash.update(serialized.encode('UTF-8'))
+
+    updated_doc.rev_num += 1
+    updated_doc.path = (hash.hexdigest(),) + updated_doc.path
+
+    return updated_doc

@@ -95,20 +95,20 @@ class InMemoryDatabase(SyncInMemoryDatabase, TransactionBasedDBMixin,
 
 def asyncify_rt_generator(method_name):
     async def proxy(self, *args, **kwargs):
-        for item in getattr(self.t, method_name)(*args, **kwargs):
+        for item in getattr(self._t, method_name)(*args, **kwargs):
             yield item
     return proxy
 
 
 def asyncify_rt_method(method_name):
     async def proxy(self, *args, **kwargs):
-        return getattr(self.t, method_name)(*args, **kwargs)
+        return getattr(self._t, method_name)(*args, **kwargs)
     return proxy
 
 
 class ReadTransaction:
     def __init__(self, t):
-        self.t = t
+        self._t = t
 
     all_docs = asyncify_rt_generator('all_docs')
     changes = asyncify_rt_generator('changes')

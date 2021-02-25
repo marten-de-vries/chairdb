@@ -87,6 +87,11 @@ class Document(AbstractDocument):
 
     def __init__(self, id, rev_num, path, body=None, attachments=None,
                  is_deleted=False):
+        # Using lists messes up the internal state of the rev tree. After the
+        # first time I encountered that issue, I switched the property from a
+        # list to a tuple. The second time, I added this assertion. Let's hope
+        # there won't be a third time. :D
+        assert isinstance(path, tuple)
         if is_deleted:
             assert attachments is None
 
