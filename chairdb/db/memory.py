@@ -3,7 +3,7 @@ import anyio
 import contextlib
 
 from ..utils import to_list, verify_no_attachments
-from .memorysync import SyncInMemoryDatabase, SyncWriteTransaction
+from .memorysync import SyncInMemoryDatabase, BasicWriteTransaction
 from .shared import (ContinuousChangesMixin, TransactionBasedDBMixin,
                      as_future_result)
 
@@ -143,7 +143,7 @@ class ReadTransaction:
         return as_future_result(self._t.revs_limit)
 
 
-class WriteTransaction(SyncWriteTransaction):
+class WriteTransaction(BasicWriteTransaction):
     def __init__(self, tg, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

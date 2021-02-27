@@ -3,11 +3,12 @@ import contextlib
 import json
 
 from .shared import (ContinuousChangesMixin, revs_diff, as_future_result,
-                     build_change, read_docs)
+                     build_change, read_docs, BasicWriteTransaction,
+                     TransactionBasedDBMixin)
 from .revtree import RevisionTree, Branch
 from .attachments import AttachmentStore, AttachmentRecord
 from .datatypes import Document, AttachmentMetadata, NotFound
-from ..utils import as_json, verify_no_attachments
+from ..utils import as_json
 
 TABLE_CREATE = [
     """CREATE TABLE revision_trees (
@@ -76,55 +77,47 @@ class SQLAttachment:
             yield (await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr}))[0]
 
 
-class SQLDatabase(ContinuousChangesMixin):
+class SQLDatabase(ContinuousChangesMixin, TransactionBasedDBMixin):
     def __init__(self, db, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._db = db
 
     async def __aenter__(self):
-        for query in TABLE_CREATE:
-            await self._db.execute(query=query)
-        return self
+        async with self._db.connection():
+            for query in TABLE_CREATE:
+                await self._db.execute(query=query)
+            return self
 
     async def __aexit__(self, *_):
         """No-op for now."""
+
+    @contextlib.asynccontextmanager
+    async def write_transaction(self):
+        actions = []
+        yield WriteTransaction(actions)
+        async with self._db.connection(), self._db.transaction():
+            for action, *args in actions:
+                await ({
+                    'write': self._write_impl,
+                    'write_local': self._write_local_impl,
+                    # TODO: revs_limit
+                }[action])(*args)
+
+    @contextlib.asynccontextmanager
+    async def read_transaction(self):
+        async with self._db.connection(), self._db.transaction():
+            yield ReadTransaction(self._db)
 
     @property
     def id(self):
         return as_future_result(str(self._db.url) + 'sql')
 
-    @property
-    def update_seq(self):
-        return self._get_update_seq()
-
-    async def _get_update_seq(self):
-        return (await self._db.fetch_one(query=UPDATE_SEQ))[0]
-
-    async def _changes(self, since=None):
-        rows = await self._db.fetch_all(query=CHANGES,
-                                        values={'since': since or 0})
-        for seq, id, tree in rows:
-            rev_tree = self._decode_tree(tree)
-            yield build_change(id, seq, rev_tree)
-
-    async def revs_diff(self, remote):
-        async for id, revs in remote:
-            yield revs_diff(id, revs, await self._revs_tree(id))
-
-    async def _revs_tree(self, id):
-        tree = await self._db.fetch_one(query=TREE_OR_NEW, values={'id': id})
-        return self._decode_tree(tree[0])
-
-    def _decode_tree(self, data):
-        return RevisionTree(Branch(rn, tuple(path), ptr)
-                            for rn, path, ptr in json.loads(data))
-
-    async def write_local(self, id, doc):
+    async def _write_local_impl(self, id, doc):
         values = {'id': id, 'document': as_json(doc)}
         await self._db.execute(WRITE_LOCAL, values)
 
-    async def write(self, doc):
-        tree = await self._revs_tree(doc.id)
+    async def _write_impl(self, doc):
+        tree = await _revs_tree(self._db, doc.id)
         full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
         if not full_path:
             return
@@ -156,21 +149,6 @@ class SQLDatabase(ContinuousChangesMixin):
             doc_ptr = await self._db.execute(WRITE_DOC, values)
         return doc_ptr
 
-    async def _att_store(self, ptr):
-        store = await self._db.fetch_one(STORE_OR_NEW, values={'id': ptr})
-        return self._decode_att_store(store[0])
-
-    def _decode_att_store(self, store):
-        result = AttachmentStore()
-        for name, (meta, ptr) in json.loads(store).items():
-            result[name] = AttachmentRecord(AttachmentMetadata(*meta), ptr)
-        return result
-
-    async def read_local(self, id):
-        with contextlib.suppress(TypeError):
-            raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
-            return json.loads(raw[0])
-
     async def _read_att(self, name, att, att_store):
         data_ptr = []
         async for chunk in att:
@@ -178,18 +156,45 @@ class SQLDatabase(ContinuousChangesMixin):
             data_ptr.append(chunk_ptr)
         att_store.add(name, att.meta, data_ptr)
 
-    def read(self, id, **opts):
-        verify_no_attachments(opts)
-        return self._read(id, **opts)
+    async def _att_store(self, ptr):
+        store = await self._db.fetch_one(STORE_OR_NEW, values={'id': ptr})
+        return _decode_att_store(store[0])
 
-    @contextlib.asynccontextmanager
-    async def read_with_attachments(self, id, **opts):
-        yield self._read(id, **opts)
+    async def ensure_full_commit(self):
+        # no-op, all writes are immediately committed
+        pass
 
-    async def _read(self, id, **opts):
+
+class ReadTransaction:
+    def __init__(self, db):
+        self._db = db
+
+    @property
+    def update_seq(self):
+        return self._get_update_seq()
+
+    async def _get_update_seq(self):
+        return (await self._db.fetch_one(query=UPDATE_SEQ))[0]
+
+    async def changes(self, since=None):
+        rows = await self._db.fetch_all(query=CHANGES,
+                                        values={'since': since or 0})
+        for seq, id, tree in rows:
+            rev_tree = _decode_tree(tree)
+            yield build_change(id, seq, rev_tree)
+
+    async def revs_diff(self, id, revs):
+        return revs_diff(id, revs, await _revs_tree(self._db, id))
+
+    async def read_local(self, id):
+        with contextlib.suppress(TypeError):
+            raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
+            return json.loads(raw[0])
+
+    async def read(self, id, **opts):
         raw_tree = await self._db.fetch_one(READ, {'id': id})
         try:
-            rev_tree = self._decode_tree(raw_tree[0])
+            rev_tree = _decode_tree(raw_tree[0])
         except TypeError:
             yield NotFound(id)
         else:
@@ -206,12 +211,32 @@ class SQLDatabase(ContinuousChangesMixin):
                 body, atts = None, None
             else:
                 body = json.loads(body_raw)
-                store = self._decode_att_store(att_raw)
+                store = _decode_att_store(att_raw)
                 atts, todo = store.read(branch, att_names, atts_since)
                 for name, att in todo:
                     atts[name] = SQLAttachment(self._db, att)
             yield Document(id, branch.leaf_rev_num, branch.path, body, atts)
 
-    async def ensure_full_commit(self):
-        # no-op, all writes are immediately committed
-        pass
+
+# helpers
+async def _revs_tree(db, id):
+    tree = await db.fetch_one(query=TREE_OR_NEW, values={'id': id})
+    return _decode_tree(tree[0])
+
+
+def _decode_tree(data):
+    return RevisionTree(Branch(rn, tuple(path), ptr)
+                        for rn, path, ptr in json.loads(data))
+
+
+def _decode_att_store(store):
+    result = AttachmentStore()
+    for name, (meta, ptr) in json.loads(store).items():
+        result[name] = AttachmentRecord(AttachmentMetadata(*meta), ptr)
+    return result
+
+
+class WriteTransaction(BasicWriteTransaction):
+    # TODO: make sure the attachments have been written to shorten the
+    # transaction
+    pass
