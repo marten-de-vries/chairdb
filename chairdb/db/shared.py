@@ -40,11 +40,19 @@ async def as_future_result(value):
 
 
 def _doc_reader_proxy(method_name):
-    @contextlib.asynccontextmanager
     async def proxy(self, *args, **kwargs):
         async with self.read_transaction() as t:
             yield getattr(t, method_name)(*args, **kwargs)
-    return proxy
+    return contextlib.asynccontextmanager(proxy)
+
+
+def _property_reader_proxy(property_name):
+    def proxy(self):
+        async def get():
+            async with self.read_transaction() as t:
+                return await getattr(t, property_name)
+        return get()
+    return property(proxy)
 
 
 def _writer_proxy(method_name):
@@ -57,6 +65,9 @@ def _writer_proxy(method_name):
 class TransactionBasedDBMixin:
     all_docs_with_attachments = _doc_reader_proxy('all_docs')
     read_with_attachments = _doc_reader_proxy('read')
+
+    update_seq = _property_reader_proxy('update_seq')
+    revs_limit = _property_reader_proxy('revs_limit')
 
     write = _writer_proxy('write')
     write_local = _writer_proxy('write_local')
@@ -75,13 +86,23 @@ class TransactionBasedDBMixin:
             async with self.read_transaction() as t:
                 yield await t.revs_diff(id, revs)
 
+    async def set_revs_limit(self, limit):
+        async with self.write_transaction() as t:
+            t.revs_limit = limit
+
 
 def _sync_doc_reader_proxy(method_name):
-    @contextlib.contextmanager
     def proxy(self, *args, **kwargs):
         with self.read_transaction_sync() as t:
             yield getattr(t, method_name)(*args, **kwargs)
-    return proxy
+    return contextlib.contextmanager(proxy)
+
+
+def _sync_property_reader_proxy(property_name):
+    def proxy(self):
+        with self.read_transaction_sync() as t:
+            return getattr(t, property_name)
+    return property(proxy)
 
 
 def _sync_reader_proxy(method_name):
@@ -109,12 +130,20 @@ class SyncTransactionBasedDBMixin:
     read_local_sync = _sync_reader_proxy('read_local')
     revs_diff_sync = _sync_reader_proxy('revs_diff')
 
+    revs_limit_sync = _sync_property_reader_proxy('revs_limit')
+    update_seq_sync = _sync_property_reader_proxy('update_seq')
+
     write_sync = _sync_writer_proxy('write')
     write_local_sync = _sync_writer_proxy('write_local')
 
     def changes_sync(self, since=None):
         with self.read_transaction_sync() as t:
             yield from t.changes(since)
+
+    @revs_limit_sync.setter
+    def revs_limit_sync(self, limit):
+        with self.write_transaction_sync() as t:
+            t.revs_limit = limit
 
 
 class ContinuousChangesMixin:

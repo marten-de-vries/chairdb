@@ -2,6 +2,7 @@ import sortedcontainers
 
 import collections
 import contextlib
+import functools
 import uuid
 import numbers
 
@@ -16,8 +17,8 @@ from ..utils import InMemoryAttachment, verify_no_attachments
 class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
     def __init__(self, id=None):
         self.id_sync = (id or uuid.uuid4().hex) + 'memory'
-        self.update_seq_sync = 0
-        self.revs_limit_sync = 1000
+        self._update_seq = 0
+        self._revs_limit = 1000
 
         # id -> document (dict)
         self._local = sortedcontainers.SortedDict(self._collate)
@@ -56,7 +57,8 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
 
     @contextlib.contextmanager
     def read_transaction_sync(self):
-        yield SyncReadTransaction(self._local, self._byid, self._byseq)
+        yield SyncReadTransaction(self._local, self._byid, self._byseq,
+                                  self._revs_limit, self._update_seq)
 
     @contextlib.contextmanager
     def write_transaction_sync(self):
@@ -77,6 +79,7 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
             {
                 'write': self._write_impl,
                 'write_local': self._write_local_impl,
+                'revs_limit': functools.partial(setattr, self, '_revs_limit'),
             }[action](*args)
 
     def _write_impl(self, doc):
@@ -92,17 +95,16 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
 
         doc_ptr = self._create_doc_ptr(doc, old_ptr)
         # insert or replace in the rev tree
-        tree.update(doc.rev_num, full_path, doc_ptr, old_i,
-                    self.revs_limit_sync)
+        tree.update(doc.rev_num, full_path, doc_ptr, old_i, self._revs_limit)
 
-        self.update_seq_sync += 1
+        self._update_seq += 1
         # actual insertion by updating the document info in the indices
-        self._byid[doc.id] = tree, self.update_seq_sync
+        self._byid[doc.id] = tree, self._update_seq
         # update the by seq index by first removing a previous reference to the
         # current document (if there is one), and then inserting a new one.
         if last_update_seq:
             del self._byseq[last_update_seq]
-        self._byseq[self.update_seq_sync] = doc.id
+        self._byseq[self._update_seq] = doc.id
 
         # Let subclass(es) know stuff changed
         self._updated()
@@ -134,10 +136,12 @@ class SyncInMemoryDatabase(SyncTransactionBasedDBMixin):
 
 
 class SyncReadTransaction:
-    def __init__(self, local, byid, byseq):
+    def __init__(self, local, byid, byseq, revs_limit, update_seq):
         self._local = local
         self._byid = byid
         self._byseq = byseq
+        self.revs_limit = revs_limit
+        self.update_seq = update_seq
 
     def all_docs(self, *, start_key=None, end_key=None, descending=False,
                  doc_opts=dict(body=False, att_names=None, atts_since=None)):
@@ -210,3 +214,8 @@ class SyncWriteTransaction:
 
     def write_local(self, id, doc):
         self._actions.append(('write_local', id, doc))
+
+    revs_limit = property()
+    @revs_limit.setter
+    def revs_limit(self, value):
+        self._actions.append(('revs_limit', value))

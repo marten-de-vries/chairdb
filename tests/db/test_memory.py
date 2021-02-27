@@ -216,6 +216,12 @@ def test_attachment_errors(db):
         db.write_sync(doc)
 
 
+def test_revs_limit(db):
+    assert db.revs_limit_sync == 1000
+    db.revs_limit_sync = 500
+    assert db.revs_limit_sync == 500
+
+
 def test_collate(db):
     docs = [
         Document(None, 1, ('a',), {}),
@@ -281,6 +287,7 @@ async def test_async(db):
     assert await db.revs_limit == 1000
     await db.set_revs_limit(500)
     assert await db.revs_limit == 500
+    assert db.revs_limit_sync == 500
 
     # some more attachment testing
     new_doc = Document('csv', 1, ('a',), {})

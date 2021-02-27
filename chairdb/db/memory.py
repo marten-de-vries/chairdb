@@ -64,21 +64,6 @@ class InMemoryDatabase(SyncInMemoryDatabase, TransactionBasedDBMixin,
         with self.read_transaction_sync() as t:
             yield ReadTransaction(t)
 
-    @property
-    def revs_limit(self):
-        return as_future_result(self.revs_limit_sync)
-
-    async def set_revs_limit(self, value):
-        self.revs_limit_sync = value
-
-    @property
-    def update_seq(self):
-        """Each database modification increases this. Starting at zero by
-        convention.
-
-        """
-        return as_future_result(self.update_seq_sync)
-
     @contextlib.asynccontextmanager
     async def write_transaction(self):
         """Not supported by all databases but required for (local) views."""
@@ -144,6 +129,18 @@ class ReadTransaction:
         """.lstrip()
     read_local = asyncify_rt_method('read_local')
     revs_diff = asyncify_rt_method('revs_diff')
+
+    @property
+    def update_seq(self):
+        """Each database modification increases this. Starting at zero by
+        convention.
+
+        """
+        return as_future_result(self._t.update_seq)
+
+    @property
+    def revs_limit(self):
+        return as_future_result(self._t.revs_limit)
 
 
 class WriteTransaction(SyncWriteTransaction):
