@@ -137,5 +137,5 @@ class ContinuousChangesMixin:
                 break
             # wait for new changes to come available, then loop
             if not hasattr(self, '_update_event'):
-                self._update_event = anyio.create_event()
+                self._update_event = anyio.Event()
             await self._update_event.wait()

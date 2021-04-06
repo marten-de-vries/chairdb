@@ -1,28 +1,19 @@
+
 import pytest
 
 import anyio
-import databases
 import pprint
 
 from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
-                     NotFound, app, Document, anext)
+                     NotFound, app, Document, anext, sqlite_pool)
 
 pytestmark = pytest.mark.anyio
 
 
-# source: https://github.com/encode/databases/issues/176#issuecomment-635245308
-class ParallelDatabase(databases.Database):
-    """Override connection() to ignore the task context and spawn a new Connection every time."""
-
-    def connection(self) -> "databases.core.Connection":
-        """Bypass self._connection_context."""
-        return databases.core.Connection(self._backend)
-
-
 @pytest.fixture
 async def sql_target():
-    async with ParallelDatabase('sqlite:////dev/shm/test.sqlite3') as db:
-        async with SQLDatabase(db) as target2:
+    async with sqlite_pool('/dev/shm/test.sqlite3') as pool:
+        async with SQLDatabase(pool) as target2:
             yield target2
 
 

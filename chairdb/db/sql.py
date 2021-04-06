@@ -42,7 +42,7 @@ ORDER BY seq"""
 TREE_OR_NEW = """SELECT COALESCE(MAX(rev_tree), '[]')
 FROM revision_trees WHERE id=:id"""
 
-WRITE_LOCAL = "INSERT INTO local_documents VALUES (:id, :document)"
+WRITE_LOCAL = "INSERT OR REPLACE INTO local_documents VALUES (:id, :document)"
 
 WRITE = f"""INSERT OR REPLACE INTO revision_trees VALUES (:id, :rev_tree,
     ({UPDATE_SEQ}) + 1
@@ -65,8 +65,8 @@ READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 
 
 class SQLAttachment:
-    def __init__(self, db, att):
-        self._db = db
+    def __init__(self, tx, att):
+        self._tx = tx
         self._data_ptr = att.data_ptr
 
         self.meta = att.meta
@@ -74,19 +74,22 @@ class SQLAttachment:
 
     async def __aiter__(self):
         for chunk_ptr in self._data_ptr:
-            yield (await self._db.fetch_one(READ_CHUNK, {'id': chunk_ptr}))[0]
+            values = {'id': chunk_ptr}
+            async with self._tx.execute(READ_CHUNK, values) as cursor:
+                chunk = (await cursor.fetchone())[0]
+            yield chunk
 
 
 class SQLDatabase(ContinuousChangesMixin, TransactionBasedDBMixin):
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, pool, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._db = db
+        self._pool = pool
 
     async def __aenter__(self):
-        async with self._db.connection():
+        async with self._pool.write_transaction() as conn:
             for query in TABLE_CREATE:
-                await self._db.execute(query=query)
-            return self
+                await conn.execute(query)
+        return self
 
     async def __aexit__(self, *_):
         """No-op for now."""
@@ -95,69 +98,73 @@ class SQLDatabase(ContinuousChangesMixin, TransactionBasedDBMixin):
     async def write_transaction(self):
         actions = []
         yield WriteTransaction(actions)
-        async with self._db.connection(), self._db.transaction():
+        async with self._pool.write_transaction() as tx:
             for action, *args in actions:
                 await ({
                     'write': self._write_impl,
                     'write_local': self._write_local_impl,
                     # TODO: revs_limit
-                }[action])(*args)
+                }[action])(tx, *args)
 
     @contextlib.asynccontextmanager
     async def read_transaction(self):
-        async with self._db.connection(), self._db.transaction():
-            yield ReadTransaction(self._db)
+        async with self._pool.read_transaction() as tx:
+            yield ReadTransaction(tx)
 
     @property
     def id(self):
-        return as_future_result(str(self._db.url) + 'sql')
+        return as_future_result(str(self._pool.url) + 'sql')
 
-    async def _write_local_impl(self, id, doc):
+    async def _write_local_impl(self, tx, id, doc):
         values = {'id': id, 'document': as_json(doc)}
-        await self._db.execute(WRITE_LOCAL, values)
+        await tx.execute(WRITE_LOCAL, values)
 
-    async def _write_impl(self, doc):
-        tree = await _revs_tree(self._db, doc.id)
+    async def _write_impl(self, tx, doc):
+        tree = await _revs_tree(tx, doc.id)
         full_path, old_ptr, old_i = tree.merge_with_path(doc.rev_num, doc.path)
         if not full_path:
             return
         # create new ptr
-        doc_ptr = await self._create_doc_ptr(doc, old_ptr)
+        doc_ptr = await self._create_doc_ptr(tx, doc, old_ptr)
         # clean up the old one
-        await self._db.execute(DELETE_DOC, {'id': old_ptr})
+        await tx.execute(DELETE_DOC, {'id': old_ptr})
         # then update the rev tree
         tree.update(doc.rev_num, full_path, doc_ptr, old_i)
         values = {'id': doc.id, 'rev_tree': as_json(tree)}
-        await self._db.execute(WRITE, values)
+        await tx.execute(WRITE, values)
 
         self._updated()
 
-    async def _create_doc_ptr(self, doc, old_ptr):
+    async def _create_doc_ptr(self, tx, doc, old_ptr):
         doc_ptr = None
         if not doc.is_deleted:
-            att_store = await self._att_store(old_ptr)
+            att_store = await self._att_store(tx, old_ptr)
             old, new = att_store.merge(doc.attachments)
             for data_ptr in old:
-                await self._db.executemany(DELETE_CHUNK, [{'id': id}
-                                                          for id in data_ptr])
+                await tx.executemany(DELETE_CHUNK, [{'id': id}
+                                                    for id in data_ptr])
             async with anyio.create_task_group() as tg:
                 for name, att in new:
-                    tg.spawn(self._read_att, name, att, att_store)
+                    tg.spawn(self._read_att, tx, name, att, att_store)
 
             values = {'body': as_json(doc.body),
                       'attachments': as_json(att_store)}
-            doc_ptr = await self._db.execute(WRITE_DOC, values)
+            async with tx.execute(WRITE_DOC, values) as cursor:
+                doc_ptr = cursor.lastrowid
         return doc_ptr
 
-    async def _read_att(self, name, att, att_store):
+    async def _read_att(self, tx, name, att, att_store):
         data_ptr = []
         async for chunk in att:
-            chunk_ptr = await self._db.execute(WRITE_CHUNK, {'data': chunk})
+            values = {'data': chunk}
+            async with await tx.execute(WRITE_CHUNK, values) as cursor:
+                chunk_ptr = cursor.lastrowid
             data_ptr.append(chunk_ptr)
         att_store.add(name, att.meta, data_ptr)
 
-    async def _att_store(self, ptr):
-        store = await self._db.fetch_one(STORE_OR_NEW, values={'id': ptr})
+    async def _att_store(self, tx, ptr):
+        async with await tx.execute(STORE_OR_NEW, {'id': ptr}) as cursor:
+            store = await cursor.fetchone()
         return _decode_att_store(store[0])
 
     async def ensure_full_commit(self):
@@ -166,33 +173,39 @@ class SQLDatabase(ContinuousChangesMixin, TransactionBasedDBMixin):
 
 
 class ReadTransaction:
-    def __init__(self, db):
-        self._db = db
+    def __init__(self, tx):
+        self._tx = tx
 
     @property
     def update_seq(self):
         return self._get_update_seq()
 
     async def _get_update_seq(self):
-        return (await self._db.fetch_one(query=UPDATE_SEQ))[0]
+        async with self._tx.execute(UPDATE_SEQ) as cursor:
+            return (await cursor.fetchone())[0]
 
     async def changes(self, since=None):
-        rows = await self._db.fetch_all(query=CHANGES,
-                                        values={'since': since or 0})
-        for seq, id, tree in rows:
-            rev_tree = _decode_tree(tree)
-            yield build_change(id, seq, rev_tree)
+        async with self._tx.execute(CHANGES, {'since': since or 0}) as cursor:
+            while True:
+                rows = await cursor.fetchmany()
+                if not rows:
+                    break
+                for seq, id, tree in rows:
+                    rev_tree = _decode_tree(tree)
+                    yield build_change(id, seq, rev_tree)
 
     async def revs_diff(self, id, revs):
-        return revs_diff(id, revs, await _revs_tree(self._db, id))
+        return revs_diff(id, revs, await _revs_tree(self._tx, id))
 
     async def read_local(self, id):
         with contextlib.suppress(TypeError):
-            raw = await self._db.fetch_one(READ_LOCAL, values={'id': id})
+            async with self._tx.execute(READ_LOCAL, {'id': id}) as cursor:
+                raw = await cursor.fetchone()
             return json.loads(raw[0])
 
     async def read(self, id, **opts):
-        raw_tree = await self._db.fetch_one(READ, {'id': id})
+        async with self._tx.execute(READ, {'id': id}) as cursor:
+            raw_tree = await cursor.fetchone()
         try:
             rev_tree = _decode_tree(raw_tree[0])
         except TypeError:
@@ -206,7 +219,8 @@ class ReadTransaction:
         for branch in read_docs(id, revs, tree):
             values = {'id': branch.leaf_doc_ptr}
             try:
-                body_raw, att_raw = await self._db.fetch_one(READ_DOC, values)
+                async with self._tx.execute(READ_DOC, values) as cursor:
+                    body_raw, att_raw = await cursor.fetchone()
             except TypeError:
                 body, atts = None, None
             else:
@@ -214,13 +228,14 @@ class ReadTransaction:
                 store = _decode_att_store(att_raw)
                 atts, todo = store.read(branch, att_names, atts_since)
                 for name, att in todo:
-                    atts[name] = SQLAttachment(self._db, att)
+                    atts[name] = SQLAttachment(self._tx, att)
             yield Document(id, branch.leaf_rev_num, branch.path, body, atts)
 
 
 # helpers
 async def _revs_tree(db, id):
-    tree = await db.fetch_one(query=TREE_OR_NEW, values={'id': id})
+    async with db.execute(TREE_OR_NEW, {'id': id}) as cursor:
+        tree = await cursor.fetchone()
     return _decode_tree(tree[0])
 
 

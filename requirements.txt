@@ -2,12 +2,11 @@ sortedcontainers
 starlette
 httpx
 ijson
-databases
 aiosqlite
 uvicorn
 aiofiles
 flake8
 pytest
 pytest-cov
-git+https://github.com/agronholm/anyio.git@sync-event-set
+git+https://github.com/agronholm/anyio.git
 trio

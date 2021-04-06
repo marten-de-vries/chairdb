@@ -14,15 +14,14 @@ class View:
         self._map = map
 
     async def build(self):
-        async with self._db.read_transaction() as rt:
+        meta_doc = await self._view_db.read_local('_meta') or {}
+        last_seq = meta_doc.get('local_seq')
+        async for change in self._db.changes(since=last_seq):
             async with self._view_db.read_transaction() as view_rt:
-                meta_doc = await view_rt.read_local('_meta') or {}
-                last_seq = meta_doc.get('local_seq')
-                async for change in rt.changes(since=last_seq):
-                    await self._process_change(rt, view_rt, change)
+                await self._process_change(view_rt, change)
 
-    async def _process_change(self, rt, view_rt, change):
-        info = await self._view_db.read_local(change.id)
+    async def _process_change(self, view_rt, change):
+        info = await view_rt.read_local(change.id)
         # get old key documents
         old_docs = {}
         for key in (info or {}).get('old_keys', []):
@@ -30,7 +29,7 @@ class View:
             old_docs[full_key] = await anext(view_rt.read(full_key,
                                                           body=False))
         # build new key documents
-        doc = await anext(rt.read(change.id))
+        doc = await anext(self._db.read(change.id))
         new_docs, new_keys = [], []
         # first, we determine the new keys through mapping
         for key, value in self._map(doc):

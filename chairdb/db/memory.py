@@ -69,7 +69,7 @@ class InMemoryDatabase(SyncInMemoryDatabase, TransactionBasedDBMixin,
         """Not supported by all databases but required for (local) views."""
 
         if not hasattr(self, '_write_lock'):
-            self._write_lock = anyio.create_lock()
+            self._write_lock = anyio.Lock()
 
         actions = []
         async with self._write_lock:

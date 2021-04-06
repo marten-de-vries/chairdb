@@ -34,7 +34,7 @@ class MultipartStreamParser:
         if self.parsing_paused_event:
             # join waiting for the current parse results
             return await self.parsing_paused_event.wait()
-        self.parsing_paused_event = anyio.create_event()
+        self.parsing_paused_event = anyio.Event()
 
         chunk = await anext(self.input)
         for args in self.parser.feed(chunk):
