@@ -175,7 +175,7 @@ def add_http_attachments(doc, todo, parser, tg):
     for name, meta in todo:
         send_streams[name], rec_stream = anyio.create_memory_object_stream()
         doc.attachments[name] = HTTPAttachment(meta, rec_stream)
-    tg.spawn(parse_atts, send_streams, parser)
+    tg.start_soon(parse_atts, send_streams, parser)
 
 
 class HTTPAttachment(typing.NamedTuple):

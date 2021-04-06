@@ -75,7 +75,7 @@ async def test_replicate_continuous():
     target = InMemoryDatabase()
     async with anyio.create_task_group() as tg:
         create_target, continuous = False, True
-        tg.spawn(replicate, source, target, create_target, continuous)
+        tg.start_soon(replicate, source, target, create_target, continuous)
         # verify the 'normal' replication is done (everything in the db has
         # been replicated succesfully)
         await document_existance(target, Document('test', 1, ('a',), {}))

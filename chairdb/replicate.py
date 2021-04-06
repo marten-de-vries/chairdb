@@ -55,7 +55,8 @@ async def replicate(source, target, create_target=False, continuous=False):
     async with anyio.create_task_group() as tg:
         async for id, missing_revs, possible_ancestors in differences:
             opts = {'revs': missing_revs, 'atts_since': possible_ancestors}
-            tg.spawn(replicate_change, source, target, hist_entry, id, opts)
+            tg.start_soon(replicate_change, source, target, hist_entry, id,
+                          opts)
 
     # -  2.4.2.5.4. Ensure In Commit
     await target.ensure_full_commit()

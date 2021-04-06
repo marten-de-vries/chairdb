@@ -183,7 +183,7 @@ class HTTPDatabase(httpx.AsyncClient):
         send_stream, receive_stream = anyio.create_memory_object_stream()
         async with self._start_read(id, **opts) as args:
             async with anyio.create_task_group() as tg:
-                tg.spawn(self._read_to_stream, send_stream, *args, tg)
+                tg.start_soon(self._read_to_stream, send_stream, *args, tg)
                 async with receive_stream:
                     yield receive_stream
 

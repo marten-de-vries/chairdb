@@ -145,7 +145,7 @@ class SQLDatabase(ContinuousChangesMixin, TransactionBasedDBMixin):
                                                     for id in data_ptr])
             async with anyio.create_task_group() as tg:
                 for name, att in new:
-                    tg.spawn(self._read_att, tx, name, att, att_store)
+                    tg.start_soon(self._read_att, tx, name, att, att_store)
 
             values = {'body': as_json(doc.body),
                       'attachments': as_json(att_store)}

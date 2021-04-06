@@ -152,7 +152,7 @@ class WriteTransaction(BasicWriteTransaction):
     def write(self, doc):
         for name, att in (doc.attachments or {}).items():
             if not att.is_stub:
-                self._tg.spawn(self._syncify_att, doc, name, att)
+                self._tg.start_soon(self._syncify_att, doc, name, att)
 
         super().write(doc)
 
