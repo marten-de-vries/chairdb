@@ -1,8 +1,10 @@
+import bisect
 import typing
 
 from ..datatypes import AttachmentMetadata, Document, AttachmentSelector
 from .shared import (get_revs_limit, chunk_id, get_rev_tree, all_docs_branch,
                      build_change, read_docs, read_atts, revs_diff)
+from ..utils import aenumerate
 
 
 class ReadTransaction:
@@ -65,12 +67,42 @@ class ReadTransaction:
 class Attachment(typing.NamedTuple):
     t: ReadTransaction
     meta: AttachmentMetadata
-    data_ptr: int
+    data_ptr: typing.Tuple[str, typing.List[int]]
     is_stub: bool = False
 
-    async def __aiter__(self):
-        # 64-bit 'size'
-        rows = self.t.all_local_docs(start_key=chunk_id(self.data_ptr, 0),
-                                     end_key=chunk_id(self.data_ptr, 2**64-1))
-        async for id, doc in rows:
-            yield doc
+    def __aiter__(self):
+        return self[:]
+
+    async def __getitem__(self, slice):
+        assert slice.step is None
+
+        att_id, chunk_ends = self.data_ptr
+        start_chunk_i, start_offset = find_start(slice.start, chunk_ends)
+        end_chunk_i, end_offset = find_end(slice.stop, chunk_ends)
+
+        rows = self.t.all_local_docs(start_key=chunk_id(att_id, start_chunk_i),
+                                     end_key=chunk_id(att_id, end_chunk_i))
+        async for i, (id, blob) in aenumerate(rows):
+            start = start_offset if i == 0 else None
+            end = end_offset if i == end_chunk_i - start_chunk_i else None
+            yield blob[start:end]
+
+
+def find_start(start, chunk_ends):
+    if start is None:
+        return 0, None
+    start_chunk_i = bisect.bisect_right(chunk_ends, start)
+    return start_chunk_i, start - chunk_start(chunk_ends, start_chunk_i)
+
+
+def find_end(stop, chunk_ends):
+    if stop is None:
+        return len(chunk_ends) - 1, None
+    end_chunk_i = bisect.bisect_left(chunk_ends, stop)
+    return end_chunk_i, stop - chunk_start(chunk_ends, end_chunk_i)
+
+
+def chunk_start(chunk_ends, chunk_i):
+    if chunk_i == 0:
+        return 0
+    return chunk_ends[chunk_i - 1]

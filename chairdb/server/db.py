@@ -298,6 +298,7 @@ class AttachmentEndpoint(HTTPEndpoint):
                 'Content-Length': str(att.meta.length),
                 'ETag': att.meta.digest,
                 'Cache-Control': 'must-revalidate',
+                # 'Accept-Ranges': 'bytes',  # TODO: implement
             })
             return resp
 

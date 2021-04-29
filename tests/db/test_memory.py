@@ -300,14 +300,17 @@ async def test_async(async_db):
 
     # some more attachment testing
     new_doc = Document('csv', 1, ('a',), {})
-    new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
+    new_doc.add_attachment('test.csv', async_iter([b'4,', b'5,', b'6']))
     await async_db.write(new_doc)
     all_atts = AttachmentSelector.all()
     async with async_db.read_with_attachments('csv', atts=all_atts) as resp:
         loaded_doc = await anext(resp)
-        assert await to_list(loaded_doc.attachments['test.csv']) == [
-            b'4,5,6'
-        ]
+        att = loaded_doc.attachments['test.csv']
+        assert await to_list(att) == [b'4,', b'5,', b'6']
+        assert await to_list(att[0:5]) == [b'4,', b'5,', b'6']
+        assert await to_list(att[1:4]) == [b',', b'5,']
+        assert await to_list(att[2:3]) == [b'5']
+        assert await to_list(att[3:3]) == [b'']
     stub_doc = await anext(async_db.read('csv'))
     assert stub_doc.attachments['test.csv'].is_stub
     # make sure re-inserting stub revision succeeds

@@ -46,9 +46,7 @@ def update_atts(store, new_attachments, chunk_info):
         if new_att.is_stub:
             new_store[name] = reuse_record(store, name, new_att)
         else:
-            att_id, chunk_ends = chunk_info[name]
-            # TODO: actually store & use the bisection info (chunk_ends)
-            new_store[name] = AttachmentRecord(new_att.meta, att_id)
+            new_store[name] = AttachmentRecord(new_att.meta, chunk_info[name])
     return new_store
 
 
