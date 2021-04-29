@@ -4,26 +4,6 @@ import mimetypes
 import typing
 
 
-class ChairDBError(Exception):
-    """Base class for all custom errors."""
-
-
-class Forbidden(ChairDBError):
-    """You need to log in."""
-
-
-class Unauthorized(ChairDBError):
-    """You are logged in, but not allowed to do this."""
-
-
-class NotFound(ChairDBError):
-    """Something (a document or database, probably) doesn't exist."""
-
-
-class PreconditionFailed(ChairDBError):
-    """Wrong assumption"""
-
-
 class Change(typing.NamedTuple):
     """A representation of a row in the _changes feed"""
 
@@ -33,10 +13,26 @@ class Change(typing.NamedTuple):
     leaf_revs: typing.List[str]
 
 
+RevisionTuple = typing.Tuple[int, str]
+
+
 class Missing(typing.NamedTuple):
     id: str
-    missing_revs: typing.List[str]
-    possible_ancestors: typing.List[str]
+    missing_revs: typing.List[RevisionTuple]
+    possible_ancestors: typing.List[RevisionTuple]
+
+
+class AttachmentSelector(typing.NamedTuple):
+    """since_revs=() means 'return all attachments'. since_revs=None means
+    'return no attachments' (except for those named in 'names')
+
+    """
+    names: typing.Tuple[str, ...] = ()
+    since_revs: typing.Optional[typing.Tuple[RevisionTuple, ...]] = None
+
+    @classmethod
+    def all(cls):
+        return cls(since_revs=())
 
 
 class DataType:
@@ -59,9 +55,9 @@ class DataType:
 
 
 class AbstractDocument(DataType):
-    __slots__ = ('id', 'body', '_is_deleted')
+    __slots__ = ('id', 'body', 'is_deleted')
 
-    def __init__(self, id, body, is_deleted=False):
+    def __init__(self, id, body=None, is_deleted=False):
         if is_deleted:
             assert body is None
 
@@ -69,29 +65,22 @@ class AbstractDocument(DataType):
         self.body = body
         self.is_deleted = is_deleted
 
-    def _get_deleted(self):
-        return self._is_deleted
 
-    def _set_deleted(self, deleted):
-        self._is_deleted = deleted
-        if deleted:
-            self.body = None
-        elif not self.body:
-            self.body = {}
-
-    is_deleted = property(fget=_get_deleted, fset=_set_deleted)
+placeholder = object()
 
 
 class Document(AbstractDocument):
     __slots__ = ('rev_num', 'path', 'attachments')
 
-    def __init__(self, id, rev_num, path, body=None, attachments=None,
+    def __init__(self, id, rev_num, path, body=None, attachments=placeholder,
                  is_deleted=False):
         # Using lists messes up the internal state of the rev tree. After the
         # first time I encountered that issue, I switched the property from a
         # list to a tuple. The second time, I added this assertion. Let's hope
         # there won't be a third time. :D
         assert isinstance(path, tuple)
+        if attachments is placeholder:
+            attachments = None if is_deleted else {}
         if is_deleted:
             assert attachments is None
 
@@ -111,19 +100,8 @@ class Document(AbstractDocument):
         attachment = NewAttachment(self.rev_num, content_type, iterator)
         self.attachments[name] = attachment
 
-    def _set_deleted(self, deleted):
-        super()._set_deleted(deleted)
-        if deleted:
-            self.attachments = None
-        elif not self.attachments:
-            self.attachments = {}
-
-    is_deleted = property(fget=AbstractDocument._get_deleted,
-                          fset=_set_deleted)
-
 
 class NewAttachment:
-    """NOTE: don't mix async/sync APIs."""
     is_stub = False
 
     def __init__(self, rev_pos, content_type, iterator):
@@ -133,8 +111,12 @@ class NewAttachment:
         self._iterator = iterator
 
     async def __aiter__(self):  # for async API users
-        async for chunk in self._iterator:
-            yield self.process_chunk(chunk)
+        try:
+            async for chunk in self._iterator:
+                yield self.process_chunk(chunk)
+        except TypeError:  # convenience function for sync users
+            for chunk in self:
+                yield chunk
 
     def __iter__(self):  # for sync API users
         for chunk in self._iterator:

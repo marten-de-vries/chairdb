@@ -21,7 +21,8 @@ import uuid
 from ..utils import (as_json, json_object_inner, parse_json_stream, rev, anext,
                      couchdb_json_to_doc, parse_rev, doc_to_couchdb_json,
                      json_array_inner, LocalDocument, add_http_attachments)
-from ..db.datatypes import NotFound
+from ..datatypes import AttachmentSelector
+from ..errors import NotFound
 from ..multipart import MultipartStreamParser
 from .utils import JSONResp, parse_query_arg
 
@@ -195,15 +196,15 @@ class DocumentEndpoint(HTTPEndpoint):
         doc_id = self.doc_id(request)
         revs, multi = self._parse_revs(request)
         atts_since = parse_query_arg(request, 'atts_since', [])
-        async with db.read_with_attachments(doc_id, revs=revs,
-                                            atts_since=atts_since) as resp:
+        atts = AttachmentSelector(since_revs=atts_since)
+        async with db.read_with_attachments(doc_id, revs=revs, atts=atts) as r:
             if not parse_query_arg(request, 'revs', default=False):
                 logger.warn('revs=true not requested, but we do it anyway!')
 
             if multi:
-                return await self._multi_response(resp)
+                return await self._multi_response(r)
             else:
-                return await self._single_response(await anext(resp))
+                return await self._single_response(await anext(r))
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -287,7 +288,8 @@ class AttachmentEndpoint(HTTPEndpoint):
         id, att_name = self.info(request)
 
         db = get_db(request)
-        async with db.read_with_attachments(id, att_names=[att_name]) as docs:
+        selection = AttachmentSelector(names=[att_name])
+        async with db.read_with_attachments(id, atts=selection) as docs:
             doc = await anext(docs)
 
             att = doc.attachments[att_name]

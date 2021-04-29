@@ -2,8 +2,9 @@ import contextlib
 import uuid
 import typing
 
-from .db.memory import InMemoryDatabase
-from .db.datatypes import Document, NotFound
+from .dbs import InMemoryDatabase
+from .datatypes import Document
+from .errors import NotFound
 from .utils import anext, verify_no_attachments, new_edit
 
 
@@ -91,7 +92,8 @@ class View:
 
         async with self._view_db.read_transaction() as t:
             all = t.all_docs(start_key=start_key, end_key=end_key,
-                             descending=descending, doc_opts={'body': True})
+                             descending=descending, doc_opts={'body': True,
+                                                              'atts': False})
             yield self._transform(t, all)
 
     async def _transform(self, t, view_resp):

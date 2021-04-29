@@ -2,14 +2,20 @@ import pytest
 
 import random
 
-from chairdb import (InMemoryDatabase, NotFound, PreconditionFailed, Document,
-                     AttachmentMetadata)
-from chairdb.db.datatypes import AttachmentStub, Change, Missing
+from chairdb import (InMemoryDatabase, SyncInMemoryDatabase, NotFound,
+                     PreconditionFailed, Document, AttachmentMetadata,
+                     AttachmentSelector)
+from chairdb.datatypes import AttachmentStub, Change, Missing
 from chairdb.utils import async_iter, to_list, anext, hashabledict
 
 
 @pytest.fixture
 def db():
+    return SyncInMemoryDatabase()
+
+
+@pytest.fixture
+def async_db():
     return InMemoryDatabase()
 
 
@@ -44,7 +50,8 @@ def test_revs_diff(db):
 
 def test_all_docs(db):
     doc = insert_doc(db)
-    assert list(db.all_docs_sync(doc_opts={'body': True})) == [doc]
+    doc_opts = {'body': True, 'atts': AttachmentSelector()}
+    assert list(db.all_docs_sync(doc_opts=doc_opts)) == [doc]
 
 
 def test_changes(db):
@@ -139,7 +146,7 @@ def test_old_conflict(db):
     ]
 
 
-def test_sync(db):
+def test_local(db):
     # local documents
     doc = {'hello': 'world!'}
     db.write_local_sync('test', doc)
@@ -178,19 +185,21 @@ def test_attachment(db):
     assert all(a.is_stub for a in read_doc.attachments.values())
 
     # retrieve text.txt by name
-    with db.read_with_attachments_sync('test', att_names=['text.txt']) as resp:
+    selection = AttachmentSelector(names=['text.txt'])
+    with db.read_with_attachments_sync('test', atts=selection) as resp:
         read_doc2 = next(resp)
         assert b''.join(read_doc2.attachments['text.txt']) == b'Hello World!'
 
     # retrieve test.json because it's newer
-    with db.read_with_attachments_sync('test', revs='all',
-                                       atts_since=[(1, 'a')]) as resp:
+    atts = AttachmentSelector(since_revs=[(1, 'a')])
+    with db.read_with_attachments_sync('test', revs='all', atts=atts) as resp:
         read_doc3 = next(resp)
         assert b''.join(read_doc3.attachments['test.json']) == b'{}'
         assert read_doc3.attachments['text.txt'].is_stub
 
     # retrieve both
-    with db.read_with_attachments_sync('test', atts_since=[]) as resp:
+    all_atts = AttachmentSelector.all()
+    with db.read_with_attachments_sync('test', atts=all_atts) as resp:
         read_doc4 = next(resp)
         assert not any(a.is_stub for a in read_doc4.attachments.values())
         assert b''.join(read_doc3.attachments['test.json']) == b'{}'
@@ -222,7 +231,8 @@ def test_revs_limit(db):
     assert db.revs_limit_sync == 500
 
 
-def test_collate(db):
+@pytest.mark.anyio
+async def test_collate(async_db):
     docs = [
         Document(None, 1, ('a',), {}),
         Document(False, 1, ('b',), {}),
@@ -241,29 +251,29 @@ def test_collate(db):
     ]
     random.shuffle(docs)  # make things interesting
 
-    with db.write_transaction_sync() as t:
+    async with async_db.write_transaction() as t:
         for doc in docs:
             t.write(doc)
-    all_revs_in_collation_order = [doc.path[0] for doc in db.all_docs_sync()]
-    assert all_revs_in_collation_order == list('abcdefghijklmn')
+    all_revs_in_order = [doc.path[0] async for doc in async_db.all_docs()]
+    assert all_revs_in_order == list('abcdefghijklmn')
 
 
 @pytest.mark.anyio
-async def test_async(db):
-    assert await db.update_seq == 0
+async def test_async(async_db):
+    assert await async_db.update_seq == 0
     # query some unexisting rev
-    assert await to_list(db.revs_diff(async_iter([
+    assert await to_list(async_db.revs_diff(async_iter([
         ('unexisting', [(1, 'x'), (2, 'y')])
     ]))) == [
         Missing('unexisting', {(1, 'x'), (2, 'y')}, set()),
     ]
     soon_overwritten = Document('mytest', 1, ('x',), {'Hello': 'World!'})
     soon_overwritten.add_attachment('test.csv', async_iter([b'1,2,3']))
-    await db.write(soon_overwritten)
-    assert len(await to_list(db.all_docs())) == 1
-    await db.write(Document('mytest', 2, ('y', 'x',), is_deleted=True))
+    await async_db.write(soon_overwritten)
+    assert len(await to_list(async_db.all_docs())) == 1
+    await async_db.write(Document('mytest', 2, ('y', 'x',), is_deleted=True))
     with pytest.raises(AttributeError):
-        await db.write({})
+        await async_db.write({})
     req = [
         # three different ways...
         ('mytest', {'revs': 'all'}),
@@ -271,36 +281,36 @@ async def test_async(db):
         ('mytest', {'revs': [(2, 'y')]}),
     ]
     for id, opts in req:
-        assert await to_list(db.read(id, **opts)) == [
+        assert await to_list(async_db.read(id, **opts)) == [
             Document('mytest', 2, ('y', 'x'), is_deleted=True),
         ]
-    assert await to_list(db.all_docs()) == []
-    assert await to_list(db.changes()) == [
+    assert await to_list(async_db.all_docs()) == []
+    assert await to_list(async_db.changes()) == [
         Change('mytest', seq=2, deleted=True, leaf_revs=[(2, 'y')])
     ]
     # try never-existing doc
     with pytest.raises(NotFound):
-        await to_list(db.read('abc'))
+        await to_list(async_db.read('abc'))
 
-    assert 'memory' in await db.id
+    assert 'memory' in await async_db.id
 
-    assert await db.revs_limit == 1000
-    await db.set_revs_limit(500)
-    assert await db.revs_limit == 500
-    assert db.revs_limit_sync == 500
+    assert await async_db.revs_limit == 1000
+    await async_db.set_revs_limit(500)
+    assert await async_db.revs_limit == 500
 
     # some more attachment testing
     new_doc = Document('csv', 1, ('a',), {})
     new_doc.add_attachment('test.csv', async_iter([b'4,5,6']))
-    await db.write(new_doc)
-    async with db.read_with_attachments('csv', atts_since=[]) as resp:
+    await async_db.write(new_doc)
+    all_atts = AttachmentSelector.all()
+    async with async_db.read_with_attachments('csv', atts=all_atts) as resp:
         loaded_doc = await anext(resp)
         assert await to_list(loaded_doc.attachments['test.csv']) == [
             b'4,5,6'
         ]
-    stub_doc = await anext(db.read('csv'))
+    stub_doc = await anext(async_db.read('csv'))
     assert stub_doc.attachments['test.csv'].is_stub
     # make sure re-inserting stub revision succeeds
     stub_doc.rev_num += 1
     stub_doc.path = ('b',) + stub_doc.path
-    await db.write(stub_doc)
+    await async_db.write(stub_doc)

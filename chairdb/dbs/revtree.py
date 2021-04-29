@@ -75,7 +75,7 @@ class RevisionTree(list):
             # doc_path = ('c', 'b', 'a')
             if branch.contains(doc_rev_num, doc_path[0]):
                 # it is. Done. The new doc can be removed
-                return None, None, None
+                return 'already_inserted',
 
             # 2. extend branch if possible. E.g.:
             #
@@ -86,7 +86,8 @@ class RevisionTree(list):
             k = doc_rev_num - branch.leaf_rev_num
             if 0 <= k < len(doc_path) and doc_path[k] == branch.path[0]:
                 # it is. Done. The old doc can be removed.
-                return doc_path[:k] + branch.path, branch.leaf_doc_ptr, i
+                return ('replace_insert', doc_path[:k] + branch.path, i,
+                        branch.leaf_doc_ptr)
 
         # otherwise insert as a new leaf branch:
         return self._insert_as_new_branch(doc_rev_num, doc_path)
@@ -107,12 +108,12 @@ class RevisionTree(list):
                 branch.path[branch_i] == doc_path[doc_i]
             )
             if common_rev:
-                # success, combine both halves into a 'full_path'
-                return doc_path[:doc_i] + branch.path[branch_i:], None, None
+                # success, combine both halves into a 'full path'
+                return 'fork_insert', doc_path[:doc_i] + branch.path[branch_i:]
         # 4. a new branch without shared history
-        return doc_path, None, None
+        return 'new_insert', doc_path
 
-    def update(self, rev_num, path, ptr, old_index=None, revs_limit=1000):
+    def update(self, revs_limit, ptr, rev_num, path, old_index=None):
         if old_index is not None:
             # replace by removing the old branch first
             del self[old_index]

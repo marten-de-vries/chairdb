@@ -8,5 +8,5 @@ aiofiles
 flake8
 pytest
 pytest-cov
-git+https://github.com/agronholm/anyio.git
 trio
+anyio

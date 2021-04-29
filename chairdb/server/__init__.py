@@ -12,7 +12,7 @@ import sortedcontainers
 import uuid
 import os
 
-from .. import InMemoryDatabase
+from ..dbs import InMemoryDatabase
 from .db import build_db_app
 from .utils import JSONResp, parse_query_arg
 from ..utils import json_array_inner

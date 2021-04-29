@@ -1,20 +1,25 @@
-
+import anyio
 import pytest
 
-import anyio
+import contextlib
+import os
 import pprint
 
 from chairdb import (HTTPDatabase, InMemoryDatabase, SQLDatabase, replicate,
-                     NotFound, app, Document, anext, sqlite_pool)
+                     NotFound, app, Document, anext, sqlite_pool,
+                     AttachmentSelector)
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
 async def sql_target():
+    with contextlib.suppress(FileNotFoundError):
+        os.remove('/dev/shm/test.sqlite3')
     async with sqlite_pool('/dev/shm/test.sqlite3') as pool:
-        async with SQLDatabase(pool) as target2:
-            yield target2
+        target2 = SQLDatabase(pool)
+        await target2.create()
+        yield target2
 
 
 @pytest.fixture
@@ -63,15 +68,16 @@ async def test_replicate_multi(anyio_backend, sql_target, brassbandwirdum,
     target2 = InMemoryDatabase(id='another-test')
     result4 = await replicate(sql_target, target2)
     assert result4['ok']
+    all_atts = AttachmentSelector.all()
     async with target2.read_with_attachments('_design/brassbandwirdum',
-                                             atts_since=[]) as resp:
+                                             atts=all_atts) as resp:
         doc = await anext(resp)
         print(doc.attachments.keys())
 
 
 async def test_replicate_continuous():
     source = InMemoryDatabase()
-    source.write_sync(Document('test', 1, ('a',), {}))
+    await source.write(Document('test', 1, ('a',), {}))
     target = InMemoryDatabase()
     async with anyio.create_task_group() as tg:
         create_target, continuous = False, True
@@ -80,7 +86,7 @@ async def test_replicate_continuous():
         # been replicated succesfully)
         await document_existance(target, Document('test', 1, ('a',), {}))
         # now write another document to check 'continuous=True'
-        source.write_sync(Document('test2', 1, ('b',), {}))
+        await source.write(Document('test2', 1, ('b',), {}))
         await document_existance(target, Document('test2', 1, ('b',), {}))
         # clean up
         tg.cancel_scope.cancel()
@@ -90,6 +96,6 @@ async def document_existance(db, doc):
     result = None
     while result != doc:
         try:
-            result = next(db.read_sync(doc.id))
+            result = await anext(db.read(doc.id))
         except NotFound:
             await anyio.sleep(0)

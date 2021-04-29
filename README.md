@@ -31,6 +31,8 @@ if __name__ == '__main__':
 
 ## File overview
 
+TODO OUTDATED
+
 - blog: the source files for the blog post on ChairDB
 - chairdb: the main package
 	- chairdb.db: database interface implementations

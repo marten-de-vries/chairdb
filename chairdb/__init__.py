@@ -1,18 +1,42 @@
-from .replicate import replicate
-from .view import View
-from .sqlitepool import sqlite_pool
-
-from .db.memory import InMemoryDatabase
-from .db.remote import HTTPDatabase
-from .db.sql import SQLDatabase
-from .db.datatypes import (ChairDBError, Unauthorized, Forbidden, NotFound,
-                           PreconditionFailed, Document, AttachmentMetadata)
-from .utils import anext
-
+from .datatypes import AttachmentMetadata, AttachmentSelector, Document
+from .dbs import (HTTPDatabase, InMemoryDatabase, SQLDatabase,
+                  SyncHTTPDatabase, SyncInMemoryDatabase, SyncSQLDatabase)
+from .errors import (ChairDBError, Forbidden, NotFound, PreconditionFailed,
+                     Unauthorized)
+from .replicator import replicate
 from .server import app
 from .server.db import build_db_app
+from .view import View
+from .utils import anext
+from .sqlitepool import sqlite_pool
 
-__all__ = ('InMemoryDatabase', 'HTTPDatabase', 'SQLDatabase', 'ChairDBError',
-           'Unauthorized', 'Forbidden', 'NotFound', 'PreconditionFailed',
-           'app', 'build_db_app', 'Document', 'anext', 'AttachmentMetadata',
-           'replicate', 'View', 'sqlite_pool')
+
+__all__ = (
+    # datatypes
+    'AttachmentMetadata',
+    'AttachmentSelector',
+    'Document',
+    # dbs
+    'HTTPDatabase',
+    'InMemoryDatabase',
+    'SQLDatabase',
+    'SyncHTTPDatabase',
+    'SyncInMemoryDatabase',
+    'SyncSQLDatabase',
+    # errors
+    'ChairDBError',
+    'Forbidden',
+    'NotFound',
+    'PreconditionFailed',
+    'Unauthorized',
+    # replicator
+    'replicate',
+    # server
+    'app',
+    'build_db_app',
+    # view
+    'View',
+    # misc
+    'anext',
+    'sqlite_pool',
+)

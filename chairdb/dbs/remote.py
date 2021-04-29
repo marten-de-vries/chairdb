@@ -4,7 +4,8 @@ import json
 import anyio
 import httpx
 
-from .datatypes import Unauthorized, Forbidden, NotFound, Change, Missing
+from ..errors import Unauthorized, Forbidden, NotFound
+from ..datatypes import AttachmentSelector, Change, Missing
 from ..multipart import MultipartStreamParser
 from ..utils import (as_json, couchdb_json_to_doc, doc_to_couchdb_json, anext,
                      json_object_inner, add_http_attachments, parse_rev, rev,
@@ -135,16 +136,15 @@ class HTTPDatabase(httpx.AsyncClient):
                 yield doc
 
     @contextlib.asynccontextmanager
-    async def _start_read(self, id, revs=None, att_names=None,
-                          atts_since=None):
-        assert att_names is None
+    async def _start_read(self, id, revs=None, atts=AttachmentSelector()):
+        assert not atts.names
         params = {'latest': 'true', 'revs': 'true'}
         if revs == 'all':
             params['open_revs'] = 'all'
         elif revs is not None:
             params['open_revs'] = as_json([rev(*r) for r in revs])
-        if atts_since is not None:
-            params['atts_since'] = as_json([rev(*r) for r in atts_since])
+        if atts.since_revs is not None:
+            params['atts_since'] = as_json([rev(*r) for r in atts.since_revs])
 
         async with self._stream('GET', '/' + id, params=params) as resp:
             yield params, resp

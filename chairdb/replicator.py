@@ -4,7 +4,8 @@ import email.utils
 import hashlib
 import uuid
 
-from .db.datatypes import NotFound
+from .errors import NotFound
+from .datatypes import AttachmentSelector
 
 REPLICATION_ID_VERSION = 1
 
@@ -54,7 +55,8 @@ async def replicate(source, target, create_target=False, continuous=False):
     # 2.4.2.5. Replicate Changes
     async with anyio.create_task_group() as tg:
         async for id, missing_revs, possible_ancestors in differences:
-            opts = {'revs': missing_revs, 'atts_since': possible_ancestors}
+            opts = {'revs': missing_revs,
+                    'atts': AttachmentSelector(since_revs=possible_ancestors)}
             tg.start_soon(replicate_change, source, target, hist_entry, id,
                           opts)
 
@@ -159,6 +161,7 @@ async def replicate_change(source, target, history_entry, id, opts):
 
                 await write_doc(target, doc, history_entry)
     except Exception as e:
+        raise
         print('read failure', repr(e))
 
 
@@ -168,6 +171,7 @@ async def write_doc(target, doc, history_entry):
     try:
         await target.write(doc)
     except Exception as e:
+        raise
         history_entry['doc_write_failures'] += 1
         print('write failure', repr(e))
 

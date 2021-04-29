@@ -8,8 +8,8 @@ import json
 import typing
 import zlib
 
-from .db.datatypes import (Document, AbstractDocument, AttachmentStub,
-                           AttachmentMetadata)
+from .datatypes import (Document, AbstractDocument, AttachmentStub,
+                        AttachmentMetadata)
 
 
 # JSON helpers
@@ -69,7 +69,8 @@ async def to_list(asynciterable):
 
 # couchdb helpers
 def verify_no_attachments(opts):
-    if 'att_names' in opts or 'atts_since' in opts:
+    atts = opts.get('atts')
+    if atts and (atts.names or atts.since_revs is not None):
         raise ValueError('cannot retrieve attachments')
 
 
@@ -92,7 +93,8 @@ def couchdb_json_to_doc(json, id=None):
     else:
         revs_default = {'start': rev_num, 'ids': [rev_hash]}
     revs = json.pop('_revisions', revs_default)
-    body = None if json.get('_deleted') else json
+    is_deleted = json.get('_deleted', False)
+    body = None if is_deleted else json
     todo = []
     if id.startswith('_local/'):
         id = id[len('_local/'):]
@@ -100,7 +102,7 @@ def couchdb_json_to_doc(json, id=None):
     else:
         atts = None if body is None else parse_attachments(body, todo)
         rev_num, path = revs['start'], tuple(revs['ids'])
-        doc = Document(id, rev_num, path, body, atts)
+        doc = Document(id, rev_num, path, body, atts, is_deleted)
     return doc, todo
 
 

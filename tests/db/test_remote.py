@@ -1,6 +1,6 @@
 import pytest
 
-from chairdb import HTTPDatabase, Document, anext
+from chairdb import Document, AttachmentSelector, HTTPDatabase, anext
 from chairdb.utils import async_iter
 
 DOCS = [
@@ -14,8 +14,9 @@ pytestmark = pytest.mark.anyio
 async def test_remote_att():
     url = 'http://localhost:5984/brassbandwirdum'
     async with HTTPDatabase(url, credentials=('marten', 'test')) as db:
+        all_atts = AttachmentSelector.all()
         async with db.read_with_attachments('_design/brassbandwirdum',
-                                            atts_since=[]) as resp:
+                                            atts=all_atts) as resp:
             async for doc in resp:
                 for name, att in doc.attachments.items():
                     total_length = sum([len(chunk) async for chunk in att])
