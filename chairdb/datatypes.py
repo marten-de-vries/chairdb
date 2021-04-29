@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import mimetypes
 import typing
 
@@ -100,6 +101,27 @@ class Document(AbstractDocument):
         attachment = NewAttachment(self.rev_num, content_type, iterator)
         self.attachments[name] = attachment
 
+    def update_rev(self):
+        hash = hashlib.md5()
+        hash.update(json.dumps(self.id).encode('UTF-8'))
+        hash.update(self._encode_int(self.rev_num))
+        for prev_hash in self.path:
+            hash.update(prev_hash.encode('UTF-8'))
+        hash.update(str(self.is_deleted).encode('UTF-8'))
+        hash.update(json.dumps(self.body).encode('UTF-8'))
+        for name, att in self.attachments.items():
+            hash.update(name.encode('UTF-8'))
+            hash.update(self._encode_int(att.meta.rev_pos))
+            hash.update(att.meta.content_type.encode('UTF-8'))
+            hash.update(self._encode_int(att.meta.length))
+            hash.update(att.meta.digest.encode('UTF-8'))
+
+        self.rev_num += 1
+        self.path = (hash.hexdigest(),) + self.path
+
+    def _encode_int(self, num):
+        return num.to_bytes(8, 'big')
+
 
 class NewAttachment:
     is_stub = False
@@ -110,17 +132,13 @@ class NewAttachment:
         self._length = 0
         self._iterator = iterator
 
-    async def __aiter__(self):  # for async API users
+    async def __aiter__(self):
         try:
             async for chunk in self._iterator:
                 yield self.process_chunk(chunk)
-        except TypeError:  # convenience function for sync users
-            for chunk in self:
-                yield chunk
-
-    def __iter__(self):  # for sync API users
-        for chunk in self._iterator:
-            yield self.process_chunk(chunk)
+        except TypeError:  # for the convenience of sync users
+            for chunk in self._iterator:
+                yield self.process_chunk(chunk)
 
     def process_chunk(self, chunk):
         self._length += len(chunk)

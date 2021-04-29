@@ -5,7 +5,7 @@ import typing
 from .dbs import InMemoryDatabase
 from .datatypes import Document
 from .errors import NotFound
-from .utils import anext, verify_no_attachments, new_edit
+from .utils import anext, verify_no_attachments
 
 
 class View:
@@ -44,7 +44,8 @@ class View:
             # delete the non-repurposed old docs:
             for old_doc in old_docs.values():
                 old_doc.is_deleted = True
-                wt.write(await new_edit(old_doc))
+                old_doc.update_rev()
+                wt.write(old_doc)
             # update the delete index
             wt.write_local(change.id, {'old_keys': new_keys})
             # and finally, update the meta doc
@@ -64,7 +65,8 @@ class View:
                 new_doc = Document(full_key, rev_num=0, path=(), body={})
         new_doc.body['value'] = value
         new_doc.body['id'] = doc.id
-        return await new_edit(new_doc)
+        new_doc.update_rev()
+        return new_doc
 
     async def query(self, **opts):
         verify_no_attachments(opts.get('doc_opts', {}))

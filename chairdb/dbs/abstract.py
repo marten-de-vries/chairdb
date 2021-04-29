@@ -65,24 +65,15 @@ class AbstractDatabase:
                     await self._write_impl(t, *args)
         self._updated()
 
-    async def _write_impl(self, t, chunk_info, doc, new_edit):
-        if new_edit:
-            """TODO: calculate & insert new rev hash"""
-
+    async def _write_impl(self, t, chunk_info, doc, check_conflict):
         # get the new document's path and check if it replaces something
         tree = await get_rev_tree(t, doc.id)
-
         state, *args = tree.merge_with_path(doc.rev_num, doc.path)
+
         # states: already_inserted, replace_insert, fork_insert, new_insert
-        conflict = (state == 'fork_insert' and new_edit)
+        conflict = (check_conflict and state == 'fork_insert')
         if state == 'already_inserted' or conflict:
-            # remove one of the now doubly inserted attachments
-            for name, (att_id, chunk_ends) in chunk_info.items():
-                for i in range(len(chunk_ends)):
-                    t.write_local(chunk_id(att_id, i), None)
-            if conflict:
-                raise Conflict()
-            return
+            return await self._handle_early_return(t, chunk_info, conflict)
         old_att_store = {}
         if state == 'replace_insert':
             *args, old_doc_ptr = args
@@ -107,3 +98,11 @@ class AbstractDatabase:
         tree.update(await get_revs_limit(t), doc_ptr, doc.rev_num, *args)
 
         t.write(doc.id, tree)
+
+    async def _handle_early_return(self, t, chunk_info, conflict):
+        # remove the newest of the now doubly inserted attachments
+        for name, (att_id, chunk_ends) in chunk_info.items():
+            for i in range(len(chunk_ends)):
+                t.write_local(chunk_id(att_id, i), None)
+        if conflict:
+            raise Conflict()

@@ -10,12 +10,12 @@ class WriteTransaction:
         self._backend = backend
         self._actions = actions
 
-    def write(self, doc, new_edit=False):  # TODO: flip default
+    def write(self, doc, check_conflict=False):
         chunk_info = {}
         for name, att in (doc.attachments or {}).items():
             if not att.is_stub:
                 self._tg.start_soon(self._store_att, chunk_info, name, att)
-        self._actions.append(('write', chunk_info, doc, new_edit))
+        self._actions.append(('write', chunk_info, doc, check_conflict))
 
     async def _store_att(self, chunk_info, name, att):
         # we keep track of the total attachment size so far after each chunk to
