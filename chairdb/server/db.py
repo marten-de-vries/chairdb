@@ -9,7 +9,7 @@ builds a full CouchDB-compatible server out of in-memory databases.
 import anyio
 from starlette.applications import Starlette
 from starlette.endpoints import HTTPEndpoint
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
 import contextlib
@@ -204,7 +204,7 @@ class DocumentEndpoint(HTTPEndpoint):
             if multi:
                 return await self._multi_response(r)
             else:
-                return await self._single_response(await anext(r))
+                return await self._single_response(request, await anext(r))
 
     def _parse_revs(self, request):
         rev = parse_query_arg(request, 'rev')
@@ -233,10 +233,16 @@ class DocumentEndpoint(HTTPEndpoint):
             yield f'{as_json(await doc_to_couchdb_json(item))}\r\n'
         yield f'--{boundary}--'
 
-    async def _single_response(self, doc):
+    async def _single_response(self, request, doc):
         if isinstance(doc, NotFound):
             return JSONResp(DOC_NOT_FOUND, 404)
-        return JSONResp(await doc_to_couchdb_json(doc))
+        etag = f'"{rev(doc.rev_num, doc.path[0])}"'
+        if request.headers.get('If-None-Match') == etag:
+            resp = Response(status_code=304)
+        else:
+            json = await doc_to_couchdb_json(doc)
+            resp = JSONResp(json, headers={'ETag': etag})
+        return resp
 
     async def put(self, request):
         doc_id = self.doc_id(request)
@@ -293,14 +299,57 @@ class AttachmentEndpoint(HTTPEndpoint):
             doc = await anext(docs)
 
             att = doc.attachments[att_name]
-            resp = StreamingResponse(att, headers={
+            etag = f'"{att.meta.digest}"'
+            headers = {
                 'Content-Type': att.meta.content_type,
-                'Content-Length': str(att.meta.length),
-                'ETag': att.meta.digest,
+                'ETag': etag,
                 'Cache-Control': 'must-revalidate',
-                # 'Accept-Ranges': 'bytes',  # TODO: implement
-            })
+                'Accept-Ranges': 'bytes',
+            }
+            if request.headers.get('If-None-Match') == etag:
+                resp = Response(status_code=304, headers=headers)
+            else:
+                resp = self._stream_attachment(request, etag, att, headers)
             return resp
+
+    def _stream_attachment(self, request, etag, att, headers):
+        status = 200
+        length = att.meta.length
+        body = att
+
+        range = self._get_range(request, etag)
+        if range:
+            start, end = range.split('-')
+            if not start:
+                start = att.meta.length - int(end)
+                end = length - 1
+            else:
+                start = int(start)
+                end = int(end) if end else (length - 1)
+            if 0 <= start <= end < att.meta.length:
+                status = 206
+                length = 1 + end - start
+                body = att[start:end + 1]
+                range = f'bytes {start}-{end}/{att.meta.length}'
+                headers['Content-Range'] = range
+            else:
+                headers['Content-Range'] = f'bytes */{att.meta.length}'
+                return Response(status_code=416, headers=headers)
+
+        headers['Content-Length'] = str(length)
+        return StreamingResponse(body, status_code=status, headers=headers)
+
+    def _get_range(self, request, etag):
+        header = request.headers.get('Range')
+        if header:
+            condition = request.headers.get('If-Range')
+            if not condition or condition == etag:
+                unit, ranges = header.split('=')
+                if unit == 'bytes':
+                    ranges = ranges.split(', ')
+                    # multipart ranges can alleviate the following check:
+                    if len(ranges) == 1:
+                        return ranges[0]
 
 
 class DesignAttachmentEndpoint(AttachmentEndpoint):

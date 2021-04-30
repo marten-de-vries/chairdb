@@ -160,19 +160,20 @@ async def doc_to_couchdb_json(doc):
 async def generate_attachments_json(doc):
     atts = {}
     for key, att in doc.attachments.items():
+        if att.is_stub:
+            result = {'stub': True}
+        else:
+            data = bytearray()
+            async for chunk in att:
+                data.extend(chunk)
+            result = {'data': base64.b64encode(data).decode('ascii')}
         atts[key] = {
             'content_type': att.meta.content_type,
             'digest': att.meta.digest,
             'length': att.meta.length,
             'revpos': att.meta.rev_pos,
+            **result
         }
-        if att.is_stub:
-            atts[key]['stub'] = True
-        else:
-            data = bytearray()
-            async for chunk in att:
-                data.extend(chunk)
-            atts[key]['data'] = base64.b64encode(data).decode('ascii')
     return atts
 
 
