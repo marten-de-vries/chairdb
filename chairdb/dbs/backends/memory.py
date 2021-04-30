@@ -8,7 +8,7 @@ import numbers
 import uuid
 
 from ...errors import NotFound
-from ..shared import as_future_result
+from ...utils import as_future_result
 
 
 class InMemoryBackend:

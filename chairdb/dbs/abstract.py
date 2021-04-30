@@ -2,12 +2,15 @@ import anyio
 
 import contextlib
 import uuid
+import typing
 
-from .writetransaction import WriteTransaction
-from .readtransaction import ReadTransaction
-from ..errors import Conflict
-from .shared import (update_atts, as_future_result, get_revs_limit, chunk_id,
-                     get_rev_tree, decode_att_store)
+from ..errors import Conflict, NotFound
+from ..datatypes import (Change, Missing, Document, AttachmentSelector,
+                         AttachmentMetadata)
+from ..utils import aenumerate, as_future_result
+
+from .revtree import RevisionTree
+from .attachments import update_atts, chunk_id, read_atts, slice_att
 
 
 class AbstractDatabase:
@@ -78,9 +81,7 @@ class AbstractDatabase:
         if state == 'replace_insert':
             *args, old_doc_ptr = args
             t.write_local(f'_body_{old_doc_ptr}', None)
-            encoded = await t.read_local(f'_att_store_{old_doc_ptr}')
-            if encoded:
-                old_att_store = decode_att_store(encoded)
+            old_att_store = await t.read_local(f'_att_store_{old_doc_ptr}')
             # TODO: how to clean up old attachments? reference counting
             # TODO: somehow? For now, just leave them in (ignore)...
         if doc.is_deleted:
@@ -106,3 +107,162 @@ class AbstractDatabase:
                 t.write_local(chunk_id(att_id, i), None)
         if conflict:
             raise Conflict()
+
+
+class ReadTransaction:
+    def __init__(self, t):
+        self._t = t
+
+    @property
+    def update_seq(self):
+        return self._t.update_seq
+
+    @property
+    def revs_limit(self):
+        return get_revs_limit(self._t)
+
+    async def all_docs(self, *, start_key=None, end_key=None, descending=False,
+                       doc_opts=dict(body=False, atts=None)):
+        rows = self._t.all_docs(start_key, end_key, descending)
+        async for id, rev_tree in rows:
+            for branch in all_docs_branch(rev_tree):
+                yield await self._read_doc(id, branch, **doc_opts)
+
+    def all_local_docs(self, *, start_key=None, end_key=None,
+                       descending=False):
+        return self._t.all_local_docs(start_key, end_key, descending)
+
+    async def changes(self, since=None):
+        async for seq, id, rev_tree in self._t.changes(since):
+            yield build_change(id, seq, rev_tree)
+
+    async def read(self, id, *, revs=None, body=True,
+                   atts=AttachmentSelector()):
+        rev_tree = await self._t.read(id)
+        for branch in read_docs(id, revs, rev_tree):
+            yield await self._read_doc(id, branch, body, atts)
+
+    async def _read_doc(self, id, branch, body, atts):
+        doc_ptr = branch.leaf_doc_ptr
+        deleted = not doc_ptr
+
+        doc_body, doc_atts = None, None
+        if not deleted:
+            if body:
+                doc_body = await self._t.read_local(f'_body_{doc_ptr}')
+            if atts:
+                att_store = await self._t.read_local(f'_att_store_{doc_ptr}')
+                doc_atts, todo = read_atts(att_store, branch, atts)
+                for name, info in todo:
+                    doc_atts[name] = Attachment(self, info.meta, info.data_ptr)
+
+        return Document(id, branch.leaf_rev_num, branch.path, doc_body,
+                        doc_atts, deleted)
+
+    def read_local(self, id):
+        return self._t.read_local(id)
+
+    async def single_revs_diff(self, id, revs):
+        return revs_diff(id, revs, await get_rev_tree(self._t, id))
+
+
+async def get_revs_limit(t):
+    return await t.read_local('_revs_limit') or 1000  # default
+
+
+def all_docs_branch(rev_tree):
+    branch = rev_tree.winner()
+    if branch.leaf_doc_ptr:  # not deleted
+        yield branch
+
+
+def build_change(id, seq, rev_tree):
+    deleted = rev_tree.winner().leaf_doc_ptr is None
+    leaf_revs = [branch.leaf_rev_tuple for branch in rev_tree.branches()]
+    return Change(id, seq, deleted, leaf_revs)
+
+
+def read_docs(id, revs, rev_tree):
+    # ... walk the revision tree
+    if revs is None:
+        yield rev_tree.winner()
+    elif revs == 'all':
+        # all leafs
+        yield from rev_tree.branches()
+    else:
+        # some leafs
+        for rev in revs:
+            yield from rev_tree.find(*rev)
+
+
+async def get_rev_tree(t, id):
+    try:
+        return await t.read(id)
+    except NotFound:
+        return RevisionTree()
+
+
+def revs_diff(id, revs, rev_tree):
+    missing, possible_ancestors = set(), set()
+    for rev in revs:
+        is_missing, new_possible_ancestors = rev_tree.diff(*rev)
+        if is_missing:
+            missing.add(rev)
+            possible_ancestors.update(new_possible_ancestors)
+    return Missing(id, missing, possible_ancestors)
+
+
+class Attachment(typing.NamedTuple):
+    t: ReadTransaction
+    meta: AttachmentMetadata
+    data_ptr: typing.Tuple[str, typing.List[int]]
+    is_stub: bool = False
+
+    def __aiter__(self):
+        return self[:]
+
+    async def __getitem__(self, s):
+        sk, ek, start_offset, end_offset, last_i = slice_att(self.data_ptr, s)
+
+        rows = self.t.all_local_docs(start_key=sk, end_key=ek)
+        async for i, (id, blob) in aenumerate(rows):
+            start = start_offset if i == 0 else None
+            end = end_offset if i == last_i else None
+            yield blob[start:end]
+
+
+class WriteTransaction:
+    def __init__(self, tg, backend, actions):
+        self._tg = tg
+        self._backend = backend
+        self._actions = actions
+
+    def write(self, doc, check_conflict=False):
+        chunk_info = {}
+        for name, att in (doc.attachments or {}).items():
+            if not att.is_stub:
+                self._tg.start_soon(self._store_att, chunk_info, name, att)
+        self._actions.append(('write', chunk_info, doc, check_conflict))
+
+    async def _store_att(self, chunk_info, name, att):
+        # we keep track of the total attachment size so far after each chunk to
+        # make efficient retrieval of parts of the attachment possible using
+        # bisection
+        att_id = uuid.uuid1().hex
+        current_end = 0
+        chunk_ends = []
+        async for i, chunk in aenumerate(att):
+            async with self._backend.write_transaction() as t:
+                t.write_local(chunk_id(att_id, i), chunk)
+            current_end += len(chunk)
+            chunk_ends.append(current_end)
+        chunk_info[name] = att_id, chunk_ends
+
+    def write_local(self, id, doc):
+        self._actions.append(('write_local', id, doc))
+
+    revs_limit = property()
+
+    @revs_limit.setter
+    def revs_limit(self, value):
+        self._actions.append(('write_local', '_revs_limit', value))

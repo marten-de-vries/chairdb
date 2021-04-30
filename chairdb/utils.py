@@ -46,6 +46,11 @@ async def json_object_inner(header, iterator, gen_footer):
 
 
 # async helpers
+async def as_future_result(value):
+    await anyio.sleep(0)
+    return value
+
+
 async def anext(docs):
     return await docs.__anext__()
 
