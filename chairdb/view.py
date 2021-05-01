@@ -2,6 +2,7 @@ import contextlib
 import uuid
 import typing
 
+from .complexkey import complex_key, parse_complex_key
 from .dbs import InMemoryDatabase
 from .datatypes import Document
 from .errors import NotFound
@@ -15,8 +16,7 @@ class View:
         self._map = map
 
     async def build(self):
-        meta_doc = await self._view_db.read_local('_meta') or {}
-        last_seq = meta_doc.get('local_seq')
+        last_seq = await self._view_db.read_local('_local_seq')
         async for change in self._db.changes(since=last_seq):
             async with self._view_db.read_transaction() as view_rt:
                 await self._process_change(view_rt, change)
@@ -26,7 +26,7 @@ class View:
         # get old key documents
         old_docs = {}
         for key in (info or {}).get('old_keys', []):
-            full_key = (key, change.id)
+            full_key = complex_key([key, change.id])
             old_docs[full_key] = await anext(view_rt.read(full_key,
                                                           body=False))
         # build new key documents
@@ -49,10 +49,10 @@ class View:
             # update the delete index
             wt.write_local(change.id, {'old_keys': new_keys})
             # and finally, update the meta doc
-            wt.write_local('_meta', {'local_seq': change.seq})
+            wt.write_local('_local_seq', change.seq)
 
     async def _build_new_doc(self, doc, key, value, view_rt, old_docs):
-        full_key = (key, doc.id)
+        full_key = complex_key([key, doc.id])
         # key already in the view? re-use the current doc as a base
         try:
             new_doc = old_docs.pop(full_key)
@@ -81,9 +81,13 @@ class View:
                                      group_level=0, doc_opts={}):
         # start_key and end_key can be tuples of arity 2: (key, doc_id)
         if isinstance(start_key, str):
-            start_key = (start_key,)
+            start_key = [start_key]
+        if start_key:
+            start_key = complex_key(start_key)
         if isinstance(end_key, str):
-            end_key = (end_key, {})  # TODO: good enough?
+            end_key = [end_key, {}]  # TODO: good enough?
+        if end_key:
+            end_key = complex_key(end_key)
 
         # TODO: support these options
         # TODO: some include_docs like thing? (read_opts here as well?) Re-use
@@ -100,7 +104,8 @@ class View:
 
     async def _transform(self, t, view_resp):
         async for v_doc in view_resp:
-            yield QueryResult(v_doc.id[0], v_doc['value'], v_doc['id'])
+            key = parse_complex_key(v_doc.id)
+            yield QueryResult(key[0], v_doc['value'], v_doc['id'])
 
 
 class QueryResult(typing.NamedTuple):

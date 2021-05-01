@@ -103,7 +103,10 @@ class Document(AbstractDocument):
 
     def update_rev(self):
         hash = hashlib.md5()
-        hash.update(json.dumps(self.id).encode('UTF-8'))
+        id = self.id
+        if isinstance(id, str):
+            id = id.encode('UTF-8')
+        hash.update(id)
         hash.update(self._encode_int(self.rev_num))
         for prev_hash in self.path:
             hash.update(prev_hash.encode('UTF-8'))

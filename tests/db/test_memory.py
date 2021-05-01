@@ -4,9 +4,9 @@ import random
 
 from chairdb import (InMemoryDatabase, SyncInMemoryDatabase, NotFound,
                      PreconditionFailed, Document, AttachmentMetadata,
-                     AttachmentSelector)
+                     AttachmentSelector, complex_key)
 from chairdb.datatypes import AttachmentStub, Change, Missing
-from chairdb.utils import async_iter, to_list, anext, hashabledict
+from chairdb.utils import async_iter, to_list, anext
 
 
 @pytest.fixture
@@ -234,20 +234,20 @@ def test_revs_limit(db):
 @pytest.mark.anyio
 async def test_collate(async_db):
     docs = [
-        Document(None, 1, ('a',), {}),
-        Document(False, 1, ('b',), {}),
-        Document(True, 1, ('c',), {}),
-        Document(-5, 1, ('d',), {}),
-        Document(0.5, 1, ('e',), {}),
-        Document('abc', 1, ('f',), {}),
-        Document('Test', 1, ('g',), {}),
-        Document((), 1, ('h',), {}),
-        Document((None, 456), 1, ('i',), {}),
-        Document((None, '123'), 1, ('j',), {}),
-        Document((True, None), 1, ('k',), {}),
-        Document(hashabledict({}), 1, ('l',), {}),
-        Document(hashabledict({'hello': 'ZZZ'}), 1, ('m',), {}),
-        Document(hashabledict({'hello': 'World!', 'more': ''}), 1, ('n',), {}),
+        Document(complex_key(None), 1, ('a',), {}),
+        Document(complex_key(False), 1, ('b',), {}),
+        Document(complex_key(True), 1, ('c',), {}),
+        Document(complex_key(-5), 1, ('d',), {}),
+        Document(complex_key(0.5), 1, ('e',), {}),
+        Document(complex_key('Test'), 1, ('f',), {}),
+        Document(complex_key('abc'), 1, ('g',), {}),
+        Document(complex_key(()), 1, ('h',), {}),
+        Document(complex_key((None, 456)), 1, ('i',), {}),
+        Document(complex_key((None, '123')), 1, ('j',), {}),
+        Document(complex_key((True, None)), 1, ('k',), {}),
+        Document(complex_key({}), 1, ('l',), {}),
+        Document(complex_key({'hello': 'World!', 'more': ''}), 1, ('m',), {}),
+        Document(complex_key({'hello': 'ZZZ'}), 1, ('n',), {}),
     ]
     random.shuffle(docs)  # make things interesting
 

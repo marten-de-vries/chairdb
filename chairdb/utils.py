@@ -225,10 +225,3 @@ def rev(rev_num, rev_hash):
 def parse_rev(rev):
     num, hash = rev.split('-')
     return int(num), hash
-
-
-# misc
-
-class hashabledict(dict):
-    def __hash__(self):
-        return hash(tuple(self.items()))

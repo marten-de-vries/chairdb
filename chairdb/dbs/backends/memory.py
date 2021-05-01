@@ -1,10 +1,8 @@
 import anyio
 import sortedcontainers
 
-import collections
 import contextlib
 import copy
-import numbers
 import uuid
 
 from ...errors import NotFound
@@ -22,26 +20,11 @@ class InMemoryBackend:
         self._update_seq = 0
 
         # id -> document (dict)
-        self._local = sortedcontainers.SortedDict(self._collate)
+        self._local = sortedcontainers.SortedDict()
         # id -> (rev_tree, last_update_seq)
-        self._byid = sortedcontainers.SortedDict(self._collate)
+        self._byid = sortedcontainers.SortedDict()
         # seq -> id (str)
         self._byseq = sortedcontainers.SortedDict()
-
-    def _collate(self, key):  # noqa: C901
-        if key is None:
-            return (1,)
-        if isinstance(key, bool):
-            return (2, key)
-        if isinstance(key, numbers.Number):
-            return (3, key)
-        if isinstance(key, str):
-            return (4, key.casefold())  # TODO: full-blown unicode collate?
-        if isinstance(key, collections.abc.Sequence):
-            return (5, tuple(self._collate(k) for k in key))
-        if isinstance(key, collections.abc.Mapping):
-            return (6, tuple(self._collate(k) for k in key))
-        raise KeyError(f'Unsupported key: {key}')  # pragma: no cover
 
     @contextlib.asynccontextmanager
     async def read_transaction(self):

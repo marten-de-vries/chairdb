@@ -1,3 +1,4 @@
+from .complexkey import complex_key, parse_complex_key
 from .datatypes import AttachmentMetadata, AttachmentSelector, Document
 from .dbs import (HTTPDatabase, InMemoryDatabase, SQLDatabase,
                   SyncHTTPDatabase, SyncInMemoryDatabase, SyncSQLDatabase)
@@ -12,6 +13,9 @@ from .sqlitepool import sqlite_pool
 
 
 __all__ = (
+    # complexkey
+    'complex_key',
+    'parse_complex_key',
     # datatypes
     'AttachmentMetadata',
     'AttachmentSelector',
