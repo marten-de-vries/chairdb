@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import json
 import sqlite3
 
@@ -22,11 +23,29 @@ TABLE_CREATE = [
 
 UPDATE_SEQ = "SELECT COALESCE(MAX(seq), 0) AS update_seq from revision_trees"
 
-ALL_LOCAL_DOCS = [
-    f"""SELECT id, is_json, data FROM local_documents
-    WHERE id BETWEEN :start_key AND :end_key ORDER BY id {order}"""
-    for order in ['ASC', 'DESC']
-]
+
+def range_query(base, start_key, end_key, descending):
+    parts = [base]
+    start_key = start_key is not None
+    end_key = end_key is not None
+
+    if start_key or end_key:
+        parts.append("WHERE")
+    if start_key:
+        parts.append("id >= :start_key")
+        if end_key:
+            parts.append("AND")
+    if end_key:
+        parts.append("id <= :end_key")
+    parts.append(f"ORDER BY id {'DESC' if descending else 'ASC'}")
+    return ' '.join(parts)
+
+
+all_local_docs_base = "SELECT id, is_json, data FROM local_documents"
+all_local_docs_query = functools.partial(range_query, all_local_docs_base)
+all_docs_base = "SELECT id, rev_tree FROM revision_trees"
+all_docs_query = functools.partial(range_query, all_docs_base)
+
 
 ALL_DOCS = [
     f"""SELECT id, rev_tree FROM revision_trees
@@ -119,13 +138,14 @@ class ReadTransaction:
                 yield row
 
     async def all_docs(self, start_key, end_key, descending):
+        query = all_docs_query(start_key, end_key, descending)
         values = {'start_key': start_key, 'end_key': end_key}
-        async with self._tx.execute(ALL_DOCS[descending], values) as cursor:
+        async with self._tx.execute(query, values) as cursor:
             async for id, tree in self._rows(cursor):
                 yield id, decode_tree(tree)
 
     async def all_local_docs(self, start_key, end_key, descending):
-        query = ALL_LOCAL_DOCS[descending]
+        query = all_local_docs_query(start_key, end_key, descending)
         values = {'start_key': start_key, 'end_key': end_key}
         async with self._tx.execute(query, values) as cursor:
             async for id, *args in self._rows(cursor):
