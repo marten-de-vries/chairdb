@@ -43,18 +43,18 @@ async def get_url(request):
 
 async def popularity(request):
     # domain popularity: give the ten most popular domains
-    heap = []
+    popcount_top = []
     aggregated = request.app.state.by_domain.aggregate(group_level=None)
     async for domain, count in aggregated:
-        if len(heap) < 10:
-            heapq.heappush(heap, (count, domain))
+        if len(popcount_top) < 10:
+            heapq.heappush(popcount_top, (count, domain))
         else:
-            heapq.heappushpop(heap, (count, domain))
+            heapq.heappushpop(popcount_top, (count, domain))
 
-    popcount_top = [heapq.heappop(heap) for i in range(len(heap))]
-    popcount_top.reverse()
+    for _ in range(len(popcount_top)):
+        popcount_top.append(heapq.heappop(popcount_top))
 
-    text = '\n'.join(f'{url} {count}'for count, url in popcount_top)
+    text = '\n'.join(f'{url} {count}'for count, url in reversed(popcount_top))
     return PlainTextResponse(text)
 
 
