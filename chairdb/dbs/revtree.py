@@ -139,6 +139,13 @@ class RevisionTree(list):
             if branch.contains(rev_num, rev_hash):
                 yield branch
 
+    def purge(self, revisions):
+        for i in reversed(range(len(self))):
+            branch = self[i]
+            if branch.leaf_rev_tuple in revisions:
+                del self[i]
+                yield branch.leaf_rev_tuple  # success
+
     def diff(self, rev_num, rev_hash):
         """Takes a revision (rev_num, rev_hash) as its input. Returns a
         (is_missing, possible_ancestors) tuple. ``is_missing`` is a bool that's
