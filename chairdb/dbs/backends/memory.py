@@ -110,15 +110,18 @@ class WriteTransaction:
     read_local = _read_local
 
     def write(self, id, tree):
-        self._update_seq += 1
+        # update the by seq index by first removing a previous reference to the
+        # current document (if there is one), and then inserting a new one.
         with contextlib.suppress(KeyError):
             _, last_update_seq = self._byid[id]
             del self._byseq[last_update_seq]
-        # update the by seq index by first removing a previous reference to the
-        # current document (if there is one), and then inserting a new one.
-        self._byseq[self._update_seq] = id
-        # actual insertion by updating the document info in the indices
-        self._byid[id] = tree, self._update_seq
+        if tree:
+            self._update_seq += 1
+            self._byseq[self._update_seq] = id
+            # actual insertion by updating the document info in the indices
+            self._byid[id] = tree, self._update_seq
+        else:
+            del self._byid[id]
 
     def write_local(self, id, doc):
         if doc is None:

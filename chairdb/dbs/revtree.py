@@ -144,7 +144,7 @@ class RevisionTree(list):
             branch = self[i]
             if branch.leaf_rev_tuple in revisions:
                 del self[i]
-                yield branch.leaf_rev_tuple  # success
+                yield branch
 
     def diff(self, rev_num, rev_hash):
         """Takes a revision (rev_num, rev_hash) as its input. Returns a

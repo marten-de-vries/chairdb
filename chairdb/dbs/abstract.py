@@ -62,11 +62,25 @@ class AbstractDatabase:
             yield WriteTransaction(tg, self._backend, actions)
         async with self._backend.write_transaction() as t:
             for action, *args in actions:
-                if action == 'write_local':
+                if action == 'purge':
+                    await self._purge_impl(t, *args)
+                elif action == 'write_local':
                     t.write_local(*args)
                 else:
                     await self._write_impl(t, *args)
         self._updated()
+
+    async def _purge_impl(self, t, id, leaf_revisions):
+        tree = await get_rev_tree(t, id)
+        for purged_branch in tree.purge(id, leaf_revisions):
+            t.write_local(f'_body_{purged_branch.leaf_doc_ptr}')
+            t.write_local(f'_att_store_{purged_branch.leaf_doc_ptr}')
+            # TODO: remove unreferenced chunks (see _write_impl)
+
+        # tree can now be the empty list, but that should be handled by the
+        # backend
+        t.write(id, tree)
+        # TODO: invalidate (or update) views
 
     async def _write_impl(self, t, chunk_info, doc, check_conflict):
         # get the new document's path and check if it replaces something
@@ -82,6 +96,7 @@ class AbstractDatabase:
             *args, old_doc_ptr = args
             t.write_local(f'_body_{old_doc_ptr}', None)
             old_att_store = await t.read_local(f'_att_store_{old_doc_ptr}')
+            t.write_local(f'_attt_store_{old_doc_ptr}', None)
             # TODO: how to clean up old attachments? reference counting
             # TODO: somehow? For now, just leave them in (ignore)...
         if doc.is_deleted:
@@ -266,3 +281,6 @@ class WriteTransaction:
     @revs_limit.setter
     def revs_limit(self, value):
         self._actions.append(('write_local', '_revs_limit', value))
+
+    def purge(self, id, leaf_revisions):
+        self._actions.append(('purge', id, leaf_revisions))

@@ -61,6 +61,7 @@ READ = "SELECT rev_tree FROM revision_trees WHERE id=:id"
 WRITE = f"""INSERT OR REPLACE INTO revision_trees VALUES (:id, :rev_tree,
     ({UPDATE_SEQ}) + 1
 )"""
+DELETE = "DELETE FROM revision_trees WHERE id=:id"
 
 
 class SQLBackend:
@@ -93,7 +94,8 @@ class SQLBackend:
             yield t
             await tx.executemany(WRITE_LOCAL, t.local_writes)
             await tx.executemany(DELETE_LOCAL, t.local_deletes)
-            await tx.executemany(WRITE, t.docs)
+            await tx.executemany(WRITE, t.writes)
+            await tx.executemany(DELETE, t.deletes)
 
 
 async def _read(self, id):
@@ -157,7 +159,8 @@ class ReadTransaction:
 class WriteTransaction:
     def __init__(self, tx):
         self._tx = tx  # for read/read_local
-        self.docs = []
+        self.writes = []
+        self.deletes = []
         self.local_writes = []
         self.local_deletes = []
 
@@ -175,7 +178,10 @@ class WriteTransaction:
             self.local_writes.append(result)
 
     def write(self, id, tree):
-        self.docs.append({'id': id, 'rev_tree': as_json(tree)})
+        if tree:
+            self.writes.append({'id': id, 'rev_tree': as_json(tree)})
+        else:
+            self.deletes.append({'id': id})
 
     read = _read
     read_local = _read_local
