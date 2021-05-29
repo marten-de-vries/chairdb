@@ -47,12 +47,6 @@ all_docs_base = "SELECT id, rev_tree FROM revision_trees"
 all_docs_query = functools.partial(range_query, all_docs_base)
 
 
-ALL_DOCS = [
-    f"""SELECT id, rev_tree FROM revision_trees
-    WHERE id BETWEEN :start_key AND :end_key ORDER BY id {order}"""
-    for order in ['ASC', 'DESC']
-]
-
 CHANGES = """SELECT seq, id, rev_tree FROM revision_trees
 WHERE seq > :since
 ORDER BY seq"""
